@@ -42,11 +42,11 @@ injection) before applying the fix. Fixed by skipping the very first
 
 ## Baseline (after the fix) — `tests/ui/perf/baseline.json`
 
-| Scenario | domNodes | heap (MB) |
-|---|---|---|
-| history-load.small (10 msgs total) | 639 | 17.1 |
-| history-load.medium (1,000 msgs total, initial load) | 1,021 | 17.1 |
-| history-load.max (5,000 msgs total, initial load) | 1,021 | 17.1 |
+| Scenario                                             | domNodes | heap (MB) |
+| ---------------------------------------------------- | -------- | --------- |
+| history-load.small (10 msgs total)                   | 639      | 17.1      |
+| history-load.medium (1,000 msgs total, initial load) | 1,021    | 17.1      |
+| history-load.max (5,000 msgs total, initial load)    | 1,021    | 17.1      |
 
 medium == max on initial load: **initial DOM size is capped by
 `INITIAL_EVENTS_LIMIT` (50 events / session, `web/static/lib.js`), not by
@@ -54,13 +54,13 @@ total history size.** Growth only happens once the user pages back.
 
 ### Prepend ("Load earlier messages") growth — new measurement
 
-| Step | domNodes | Δ vs prev | click→render latency |
-|---|---|---|---|
-| initial | 1,021 | — | — |
-| step 0 | 1,975 | +954 | 60–72 ms |
-| step 1 | 2,450 | +475 | 37–130 ms |
-| step 2 | 2,925 | +475 | 44–48 ms |
-| step 3 | 3,400 | +475 | 40–127 ms |
+| Step    | domNodes | Δ vs prev | click→render latency |
+| ------- | -------- | --------- | -------------------- |
+| initial | 1,021    | —         | —                    |
+| step 0  | 1,975    | +954      | 60–72 ms             |
+| step 1  | 2,450    | +475      | 37–130 ms            |
+| step 2  | 2,925    | +475      | 44–48 ms             |
+| step 3  | 3,400    | +475      | 40–127 ms            |
 
 ~475 nodes per load-more page (25 message pairs) ⇒ ~19 nodes/message.
 Extrapolated to the `MAX_MESSAGES=1000` retention ceiling (`web/static/lib.js`):
@@ -75,10 +75,10 @@ below re: not yet measuring scroll-FPS at the fully-grown state).
 
 Same seeded "medium" session, same growth steps, `.mitto-perf-cv` OFF vs ON:
 
-| | domNodes | layout Δ (CDP cumulative) |
-|---|---|---|
-| OFF | 2,303 | 0.00 ms |
-| ON | 2,303 | -0.37 ms |
+|     | domNodes | layout Δ (CDP cumulative) |
+| --- | -------- | ------------------------- |
+| OFF | 2,303    | 0.00 ms                   |
+| ON  | 2,303    | -0.37 ms                  |
 
 **DOM node count is identical.** `content-visibility: auto` skips layout/
 paint work for offscreen rows but does **not** remove them from the DOM —
@@ -101,7 +101,7 @@ threshold above doesn't justify building it yet:
   container. A window would need either (a) absolute-position rows with a
   spacer matching total estimated height, which fights `column-reverse`'s
   browser-native bottom-anchoring, or (b) keep `column-reverse` and only
-  vary which rows are *mounted* (not absolutely positioned) — simpler, but
+  vary which rows are _mounted_ (not absolutely positioned) — simpler, but
   loses fixed-pixel scroll-position math for jump-to-message.
 - **Prepend compensation:** the window must report `scrollHeight` deltas
   back into `useScrollManagement`'s existing `justLoadedMoreRef` prepend
@@ -130,6 +130,7 @@ threshold above doesn't justify building it yet:
 Both candidates are **React-only** (peer-dep on `react`/`react-dom`); this
 project has no bundler and no React — it's raw ESM + Preact-from-globals +
 HTM (`docs/devel/frontend-bundler-spike.md`). Adoption would require:
+
 1. `preact/compat` aliased to `react`/`react-dom` (the standard technique;
    not currently vendored).
 2. A per-component esbuild bundle (precedent: `vendor/codemirror/`, already
@@ -137,13 +138,13 @@ HTM (`docs/devel/frontend-bundler-spike.md`). Adoption would require:
    for" and viable for exactly this kind of single-component bundle).
 3. Two new npm dependencies — **requires explicit approval** per the bead.
 
-| | `react-window` | `react-virtuoso` |
-|---|---|---|
-| Gzip size | ~2–6 KB | ~17 KB |
-| Variable-height support | Manual (`VariableSizeList`, you supply estimates) | Built-in, designed for this |
-| Prepend / "load older" support | Manual | Built-in (`firstItemIndex`, `startReached`) |
-| Fit for this problem | Needs the most custom glue | Best structural fit |
-| License | MIT | MIT |
+|                                | `react-window`                                    | `react-virtuoso`                            |
+| ------------------------------ | ------------------------------------------------- | ------------------------------------------- |
+| Gzip size                      | ~2–6 KB                                           | ~17 KB                                      |
+| Variable-height support        | Manual (`VariableSizeList`, you supply estimates) | Built-in, designed for this                 |
+| Prepend / "load older" support | Manual                                            | Built-in (`firstItemIndex`, `startReached`) |
+| Fit for this problem           | Needs the most custom glue                        | Best structural fit                         |
+| License                        | MIT                                               | MIT                                         |
 
 **If ever pursued, `react-virtuoso` is the better fit** — variable-height
 and prepend are exactly its designed use case, avoiding most of Prototype
@@ -153,11 +154,11 @@ bundle. Neither removes the search/copy/accessibility trade-offs above.
 
 ## Threshold table
 
-| History size × content | Budget | Status |
-|---|---|---|
-| Initial paint, any size | ~1,021 DOM nodes | Well within norms (record-only, `ui-responsiveness-benchmarks.md` row 7) |
+| History size × content             | Budget                                 | Status                                                                             |
+| ---------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
+| Initial paint, any size            | ~1,021 DOM nodes                       | Well within norms (record-only, `ui-responsiveness-benchmarks.md` row 7)           |
 | Fully paged to `MAX_MESSAGES=1000` | ~10–19k DOM nodes (measured/projected) | Not yet observed to cause jank; scroll-FPS at this scale is unmeasured (see below) |
-| Prepend click→render | 37–130 ms | No hard budget; comparable to existing record-only latencies |
+| Prepend click→render               | 37–130 ms                              | No hard budget; comparable to existing record-only latencies                       |
 
 ## Chromium vs WKWebView feasibility
 
@@ -166,12 +167,12 @@ harness is Chromium-only). WKWebView numbers were not captured this spike,
 but per-technique **feasibility** is well-defined by documented WebKit
 support for exactly the APIs each prototype relies on:
 
-| Technique | Chromium | WKWebView (macOS app, `cmd/mitto-app`) | Verdict |
-|---|---|---|---|
-| `content-visibility: auto` (Prototype A) | Supported since Chrome 85 | Supported since Safari/WebKit 18 (macOS 15 / iOS 18.2). Older WebKit ignores the unknown property — degrades gracefully to today's behavior. | **Feasible in both**; the "no reduction in DOM count" finding is a property of the CSS spec, not the engine, so it applies identically to WebKit. |
-| `IntersectionObserver` / `ResizeObserver` (Prototype B's building blocks) | Supported for years | Supported for years in every shipping WebKit. | **Feasible in both.** |
-| `react-virtuoso` / `react-window` (Prototype C) | Uses only standard DOM / observer APIs | Same — no WebKit-specific gaps documented by either library. | **Feasible in both**, gated on the `preact/compat` + bundler-entry cost noted above (engine-neutral). |
-| DOM-node-count scaling | Layout/paint cost scales roughly linearly with subtree size in both engines; WebKit is historically **slightly slower** on very large trees (>50k nodes). | Same shape, slightly worse constant. | Any Chromium threshold measured here is a **conservative** estimate for WKWebView — WKWebView would breach the same budget at an equal or smaller history size, never later. |
+| Technique                                                                 | Chromium                                                                                                                                                  | WKWebView (macOS app, `cmd/mitto-app`)                                                                                                       | Verdict                                                                                                                                                                      |
+| ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `content-visibility: auto` (Prototype A)                                  | Supported since Chrome 85                                                                                                                                 | Supported since Safari/WebKit 18 (macOS 15 / iOS 18.2). Older WebKit ignores the unknown property — degrades gracefully to today's behavior. | **Feasible in both**; the "no reduction in DOM count" finding is a property of the CSS spec, not the engine, so it applies identically to WebKit.                            |
+| `IntersectionObserver` / `ResizeObserver` (Prototype B's building blocks) | Supported for years                                                                                                                                       | Supported for years in every shipping WebKit.                                                                                                | **Feasible in both.**                                                                                                                                                        |
+| `react-virtuoso` / `react-window` (Prototype C)                           | Uses only standard DOM / observer APIs                                                                                                                    | Same — no WebKit-specific gaps documented by either library.                                                                                 | **Feasible in both**, gated on the `preact/compat` + bundler-entry cost noted above (engine-neutral).                                                                        |
+| DOM-node-count scaling                                                    | Layout/paint cost scales roughly linearly with subtree size in both engines; WebKit is historically **slightly slower** on very large trees (>50k nodes). | Same shape, slightly worse constant.                                                                                                         | Any Chromium threshold measured here is a **conservative** estimate for WKWebView — WKWebView would breach the same budget at an equal or smaller history size, never later. |
 
 **Consequence for the recommendation:** the "no-op for now" verdict holds
 for WKWebView too — its worst-case DOM cost at the `MAX_MESSAGES=1000`
@@ -183,13 +184,13 @@ WKWebView being the more conservative gate.
 
 ## Risk register
 
-| Risk | Notes |
-|---|---|
-| Correctness (reverse order, streaming) | Custom windowing (B) touches the trickiest seams in the app; highest regression risk of the three prototypes |
-| Accessibility | Both B and a library regress AT access to unmounted rows; no clean mitigation identified |
-| WKWebView parity | Per-technique feasibility documented above (Chromium vs WKWebView table) — all three prototypes are engine-compatible. Runtime performance in WKWebView is **not measured** this spike (Playwright harness is Chromium-only); Chromium numbers here are a conservative bound for WKWebView. |
-| Dependency cost | C requires `preact/compat` shim + 2 new deps + a new bundler entry — highest process cost of the three |
-| Premature optimization | Current numbers don't show a problem — building B or adopting C now is speculative |
+| Risk                                   | Notes                                                                                                                                                                                                                                                                                       |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Correctness (reverse order, streaming) | Custom windowing (B) touches the trickiest seams in the app; highest regression risk of the three prototypes                                                                                                                                                                                |
+| Accessibility                          | Both B and a library regress AT access to unmounted rows; no clean mitigation identified                                                                                                                                                                                                    |
+| WKWebView parity                       | Per-technique feasibility documented above (Chromium vs WKWebView table) — all three prototypes are engine-compatible. Runtime performance in WKWebView is **not measured** this spike (Playwright harness is Chromium-only); Chromium numbers here are a conservative bound for WKWebView. |
+| Dependency cost                        | C requires `preact/compat` shim + 2 new deps + a new bundler entry — highest process cost of the three                                                                                                                                                                                      |
+| Premature optimization                 | Current numbers don't show a problem — building B or adopting C now is speculative                                                                                                                                                                                                          |
 
 ## Staged rollout / fallback (if revisited later)
 

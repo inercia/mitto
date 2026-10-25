@@ -15,22 +15,22 @@ New installs are seeded with a set of well-known profiles from the embedded
 installs are left untouched). All but `Auto` use `matchMode: contains`, so they are
 version-agnostic, and their tags **union** across overlapping matches:
 
-| Profile         | Pattern    | Tags                                                             |
-| --------------- | ---------- | ---------------------------------------------------------------- |
-| Claude          | `Claude`   | `Anthropic`                                                      |
-| Claude Mythos   | `Mythos`   | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
-| Claude Opus     | `Opus`     | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
+| Profile           | Pattern      | Tags                                                             |
+| ----------------- | ------------ | ---------------------------------------------------------------- |
+| Claude            | `Claude`     | `Anthropic`                                                      |
+| Claude Mythos     | `Mythos`     | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
+| Claude Opus       | `Opus`       | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
 | Claude Sonnet 5.5 | `Sonnet 5.5` | `Smart`, `Coding`                                                |
-| Claude Sonnet 5 | `Sonnet 5` | `Smart`, `Coding`                                                |
-| Claude Sonnet 4 | `Sonnet 4` | `Smart`, `Coding`                                                |
-| Claude Haiku    | `Haiku`    | `Fast`, `Cheap`                                                  |
-| GPT-5           | `GPT-5`    | `Smart`, `Reasoning`, `Thinking`, `Deep`, `Coding`               |
-| GPT-4           | `GPT-4`    | `Smart`, `Coding`                                                |
-| OpenAI GPT      | `GPT`      | `OpenAI`                                                         |
-| Gemini          | `Gemini`   | `Smart`, `LongContext`                                           |
-| GLM             | `GLM`      | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
-| DeepSeek        | `DeepSeek` | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
-| Auto            | `Auto`     | `Auto`, `Smartest`, `Reasoning`, `Thinking`, `Deep` (`exact`)    |
+| Claude Sonnet 5   | `Sonnet 5`   | `Smart`, `Coding`                                                |
+| Claude Sonnet 4   | `Sonnet 4`   | `Smart`, `Coding`                                                |
+| Claude Haiku      | `Haiku`      | `Fast`, `Cheap`                                                  |
+| GPT-5             | `GPT-5`      | `Smart`, `Reasoning`, `Thinking`, `Deep`, `Coding`               |
+| GPT-4             | `GPT-4`      | `Smart`, `Coding`                                                |
+| OpenAI GPT        | `GPT`        | `OpenAI`                                                         |
+| Gemini            | `Gemini`     | `Smart`, `LongContext`                                           |
+| GLM               | `GLM`        | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
+| DeepSeek          | `DeepSeek`   | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
+| Auto              | `Auto`       | `Auto`, `Smartest`, `Reasoning`, `Thinking`, `Deep` (`exact`)    |
 
 Because matching is additive, a name like `Claude Opus 4.x` resolves to the union of
 the vendor-level `Claude` profile and the `Claude Opus` profile
@@ -206,7 +206,7 @@ conversations:
 
 - **Defaults**: empty for existing installs; new installs are seeded with `Cheap`
   from `config.default.yaml`.
-- **Precedence**: the global tag is only a *fallback*. A workspace that sets any of
+- **Precedence**: the global tag is only a _fallback_. A workspace that sets any of
   `auxiliary_model_profile` / `auxiliary_model_tag` / `auxiliary_model_selection`
   wins (order: Profile > Tag > Selection) and the global tag is then ignored, even if
   the workspace tag matches nothing.
@@ -324,7 +324,7 @@ models may add, remove or change its allowed values; see
 
 **Reconciliation on model change (mitto-bnk):** when a model switch removes or
 narrows a dependent option like `reasoning_effort`, Mitto reconciles the
-operator's preference against the agent's *new* post-switch snapshot rather
+operator's preference against the agent's _new_ post-switch snapshot rather
 than blindly resending the old value — an option the new model no longer
 advertises is dropped (not silently resent), a value the new model doesn't
 offer is dropped with a one-line explanation, and there is **no** universal

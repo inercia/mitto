@@ -184,7 +184,10 @@ server sends `error` plus a re-broadcast of the unchanged snapshot.
 ### `apply_model_tag` — Apply a model tag to the socket session
 
 ```json
-{"type":"apply_model_tag","data":{"model_tag":"Coding","request_id":"unique-client-id"}}
+{
+  "type": "apply_model_tag",
+  "data": { "model_tag": "Coding", "request_id": "unique-client-id" }
+}
 ```
 
 Uses the authenticated `/api/sessions/{id}/ws` session only; a payload target
@@ -278,15 +281,15 @@ Sent immediately after WebSocket upgrade. Includes last prompt info for delivery
 }
 ```
 
-| Field                  | Type   | Description                                                                 |
-| ---------------------- | ------ | -------------------------------------------------------------------------- |
-| `session_id`           | string | Session identifier                                                         |
-| `client_id`            | string | Unique ID for this WebSocket client                                        |
-| `acp_server`           | string | ACP server name                                                            |
-| `is_running`           | bool   | Whether ACP process is active                                              |
-| `is_prompting`         | bool   | Whether agent is currently responding                                      |
-| `last_user_prompt_id`  | string | Last prompt ID (for delivery verification)                                 |
-| `last_user_prompt_seq` | int64  | Last prompt sequence (for delivery verification)                           |
+| Field                  | Type   | Description                                                                   |
+| ---------------------- | ------ | ----------------------------------------------------------------------------- |
+| `session_id`           | string | Session identifier                                                            |
+| `client_id`            | string | Unique ID for this WebSocket client                                           |
+| `acp_server`           | string | ACP server name                                                               |
+| `is_running`           | bool   | Whether ACP process is active                                                 |
+| `is_prompting`         | bool   | Whether agent is currently responding                                         |
+| `last_user_prompt_id`  | string | Last prompt ID (for delivery verification)                                    |
+| `last_user_prompt_seq` | int64  | Last prompt sequence (for delivery verification)                              |
 | `backend`              | object | **Optional**, additive protocol-neutral descriptor — see below (mitto-lrt.12) |
 
 #### Optional backend descriptor (additive)
@@ -303,16 +306,16 @@ treat it as "not available" (older server, or no identity/live state), not as
 an error. Because it rides inside the reconnect-authoritative snapshots, no new
 event type is introduced and no duplicate toasts/state transitions occur.
 
-| Field                       | Type            | Description                                                                                                                   |
-| --------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `agent_ref.backend`         | string          | Backend implementation kind (e.g. `"acp"`)                                                                                   |
-| `agent_ref.provider`        | string          | Provider id on that backend                                                                                                  |
-| `session_ref.conversation_id` | string        | Mitto-owned conversation id (kept distinct from the upstream id — the two identifier spaces never collapse)                  |
-| `session_ref.provider`      | string          | Provider owning this session                                                                                                 |
-| `session_ref.provider_session` | string       | Upstream-assigned session id (optional; empty when the upstream has not assigned one yet)                                    |
-| `capabilities`              | object          | Feature name → tri-state string, one of `"unknown"`, `"supported"`, `"unsupported"` (see below). Present only with live state |
-| `model`                     | object          | `{ current_id, available[] }` mirror of available/selected models (optional)                                                 |
-| `config_options`            | array           | Neutral mirror of session config options `{ id, category, current, values[] }` (optional)                                   |
+| Field                          | Type   | Description                                                                                                                   |
+| ------------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `agent_ref.backend`            | string | Backend implementation kind (e.g. `"acp"`)                                                                                    |
+| `agent_ref.provider`           | string | Provider id on that backend                                                                                                   |
+| `session_ref.conversation_id`  | string | Mitto-owned conversation id (kept distinct from the upstream id — the two identifier spaces never collapse)                   |
+| `session_ref.provider`         | string | Provider owning this session                                                                                                  |
+| `session_ref.provider_session` | string | Upstream-assigned session id (optional; empty when the upstream has not assigned one yet)                                     |
+| `capabilities`                 | object | Feature name → tri-state string, one of `"unknown"`, `"supported"`, `"unsupported"` (see below). Present only with live state |
+| `model`                        | object | `{ current_id, available[] }` mirror of available/selected models (optional)                                                  |
+| `config_options`               | array  | Neutral mirror of session config options `{ id, category, current, values[] }` (optional)                                     |
 
 Capability keys are the `agentbackend.Feature` names: `images`, `files`,
 `terminals`, `permissions`, `model_selection`, `mode_selection`. The tri-state
@@ -487,7 +490,13 @@ Sent when the ACP process is started (e.g., session unarchived). Like
 computable); older servers and legacy clients are unaffected by its absence.
 
 ```json
-{ "type": "acp_started", "data": { "session_id": "...", "backend": { "agent_ref": { "backend": "acp", "provider": "auggie" } } } }
+{
+  "type": "acp_started",
+  "data": {
+    "session_id": "...",
+    "backend": { "agent_ref": { "backend": "acp", "provider": "auggie" } }
+  }
+}
 ```
 
 #### `acp_start_failed` — ACP process failed to start
@@ -895,23 +904,32 @@ rather than clearing it on absence.
 ### `model_tag_applied` — Requester-only tag application result
 
 ```json
-{"type":"model_tag_applied","data":{"session_id":"socket-session","request_id":"unique-client-id","model_tag":"Coding","status":"applied","model_id":"resolved-id"}}
+{
+  "type": "model_tag_applied",
+  "data": {
+    "session_id": "socket-session",
+    "request_id": "unique-client-id",
+    "model_tag": "Coding",
+    "status": "applied",
+    "model_id": "resolved-id"
+  }
+}
 ```
 
 Always includes `session_id`, `request_id`, `model_tag` and `status`.
 `model_id` is present only for `applied` / `already_active`; errors include a
 fixed safe `message`. Result statuses:
 
-| Status | Meaning |
-| --- | --- |
-| `applied` | Selection accepted through the normal path; may be deferred during a running prompt. |
-| `already_active` | Canonical idle/current-model branch; not a browser comparison. |
-| `no_match` | No matching model (including an empty catalog). |
-| `catalog_unavailable` | Model catalog unavailable. |
-| `invalid_tag` | Missing/null/blank tag. |
-| `invalid_request` | Invalid data/field types. |
-| `missing_session` | Socket session unavailable; no creation or resume is performed. |
-| `internal_error` | Canonical application failed. |
+| Status                | Meaning                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------ |
+| `applied`             | Selection accepted through the normal path; may be deferred during a running prompt. |
+| `already_active`      | Canonical idle/current-model branch; not a browser comparison.                       |
+| `no_match`            | No matching model (including an empty catalog).                                      |
+| `catalog_unavailable` | Model catalog unavailable.                                                           |
+| `invalid_tag`         | Missing/null/blank tag.                                                              |
+| `invalid_request`     | Invalid data/field types.                                                            |
+| `missing_session`     | Socket session unavailable; no creation or resume is performed.                      |
+| `internal_error`      | Canonical application failed.                                                        |
 
 This event goes only to the requesting session socket, never the global bus.
 It is not persisted or replayed. Result/config event order is unspecified;
@@ -937,7 +955,12 @@ or reload. Restoration does not create a separate timeline entry.
     "config_id": "mode",
     "value": "plan",
     "config_options": [
-      { "id": "reasoning_effort", "category": "thought_level", "current": "high", "values": ["low", "high"] }
+      {
+        "id": "reasoning_effort",
+        "category": "thought_level",
+        "current": "high",
+        "values": ["low", "high"]
+      }
     ]
   }
 }
@@ -953,7 +976,7 @@ so the UI rolls back.
 
 **`adjustments` (mitto-bnk)**: optional array, present only when non-empty —
 emitted when a **model change** (`config_id` for the model category) forces
-Mitto to drop or rewrite one or more *other* pending/persisted config
+Mitto to drop or rewrite one or more _other_ pending/persisted config
 preferences because they no longer apply to the new model's snapshot. Omitted
 entirely (not an empty array) when no dependent option needed adjusting; clients
 must not assume the key is always present. Each entry:
@@ -967,18 +990,18 @@ must not assume the key is always present. Each entry:
 }
 ```
 
-| Field             | Presence              | Meaning                                                              |
-| ----------------- | ---------------------- | --------------------------------------------------------------------- |
-| `config_id`       | always                  | The dependent option that was adjusted (not the option that changed) |
-| `requested_value` | omitted if empty        | The value the user/operator had selected or persisted                |
-| `applied_value`   | omitted if empty        | The value Mitto actually applied or fell back to, if any              |
-| `reason`          | always                  | One of the three reasons below                                       |
+| Field             | Presence         | Meaning                                                              |
+| ----------------- | ---------------- | -------------------------------------------------------------------- |
+| `config_id`       | always           | The dependent option that was adjusted (not the option that changed) |
+| `requested_value` | omitted if empty | The value the user/operator had selected or persisted                |
+| `applied_value`   | omitted if empty | The value Mitto actually applied or fell back to, if any             |
+| `reason`          | always           | One of the three reasons below                                       |
 
-| Reason                  | Meaning                                                                                      |
-| ------------------------ | --------------------------------------------------------------------------------------------- |
-| `option_removed`         | The new model's snapshot no longer advertises this option at all; the preference was dropped |
-| `value_not_advertised`   | The option still exists, but the requested value isn't in its new `values` list; Mitto fell back to the model's current value instead |
-| `snapshot_unconfirmed`   | The agent didn't deliver (or confirm) a fresh config snapshot within 5 seconds of the model change, so Mitto could not safely re-apply the preference and dropped it for this change |
+| Reason                 | Meaning                                                                                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `option_removed`       | The new model's snapshot no longer advertises this option at all; the preference was dropped                                                                                         |
+| `value_not_advertised` | The option still exists, but the requested value isn't in its new `values` list; Mitto fell back to the model's current value instead                                                |
+| `snapshot_unconfirmed` | The agent didn't deliver (or confirm) a fresh config snapshot within 5 seconds of the model change, so Mitto could not safely re-apply the preference and dropped it for this change |
 
 Example with `adjustments` present (switching from a reasoning model to one
 without `reasoning_effort`):
@@ -991,10 +1014,19 @@ without `reasoning_effort`):
     "config_id": "model",
     "value": "claude-haiku-4.5",
     "config_options": [
-      { "id": "model", "category": "model", "current": "claude-haiku-4.5", "values": ["claude-haiku-4.5", "claude-sonnet-5"] }
+      {
+        "id": "model",
+        "category": "model",
+        "current": "claude-haiku-4.5",
+        "values": ["claude-haiku-4.5", "claude-sonnet-5"]
+      }
     ],
     "adjustments": [
-      { "config_id": "reasoning_effort", "requested_value": "high", "reason": "option_removed" }
+      {
+        "config_id": "reasoning_effort",
+        "requested_value": "high",
+        "reason": "option_removed"
+      }
     ]
   }
 }
@@ -1347,7 +1379,10 @@ Broadcast after a folder's ordered task-label color mapping is saved via
 `GET /api/folders/task-label-colors?working_dir=...` for the affected folder.
 
 ```json
-{ "type": "folder_task_label_colors_updated", "data": { "working_dir": "/project" } }
+{
+  "type": "folder_task_label_colors_updated",
+  "data": { "working_dir": "/project" }
+}
 ```
 
 ### Diagnostic & Lifecycle Events

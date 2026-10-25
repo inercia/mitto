@@ -140,12 +140,12 @@ The following keyboard shortcuts are available from the app menu:
 
 **Conversations:**
 
-| Shortcut | Action              | Description                                    |
-| -------- | ------------------- | ---------------------------------------------- |
-| `⌘N`     | New Conversation    | Create a new conversation                      |
+| Shortcut | Action                | Description                                                                                                                       |
+| -------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `⌘N`     | New Conversation      | Create a new conversation                                                                                                         |
 | `⌘⌥N`    | New Conversation Here | Create a conversation in the active conversation's folder using that folder's default workspace (or first exact-folder workspace) |
-| `⌘W`     | Close Conversation  | Close the current conversation                 |
-| `⌘1-9`   | Switch Conversation | Switch to conversation 1-9 in the sidebar list |
+| `⌘W`     | Close Conversation    | Close the current conversation                                                                                                    |
+| `⌘1-9`   | Switch Conversation   | Switch to conversation 1-9 in the sidebar list                                                                                    |
 
 **Navigation:**
 
@@ -161,16 +161,16 @@ These shortcuts are fixed and cannot be customized.
 
 Here's a complete reference of all keyboard shortcuts:
 
-| Shortcut | Action                     | Notes                                              |
-| -------- | -------------------------- | -------------------------------------------------- |
-| `⌘⇧M`    | Show/Hide Window           | Global hotkey (works even when app is not focused) |
-| `⌘N`     | New Conversation           |                                                    |
+| Shortcut | Action                     | Notes                                                                                  |
+| -------- | -------------------------- | -------------------------------------------------------------------------------------- |
+| `⌘⇧M`    | Show/Hide Window           | Global hotkey (works even when app is not focused)                                     |
+| `⌘N`     | New Conversation           |                                                                                        |
 | `⌘⌥N`    | New Conversation Here      | Active conversation's folder; Cmd+Alt+N in macOS browsers, Ctrl+Alt+N on Windows/Linux |
-| `⌘W`     | Close Conversation         |                                                    |
-| `⌘,`     | Settings                   | Standard macOS preference shortcut                 |
-| `⌘1-9`   | Switch to Conversation 1-9 | Based on sidebar order                             |
-| `⌘L`     | Focus Input                |                                                    |
-| `⌘⇧S`    | Toggle Sidebar             |                                                    |
+| `⌘W`     | Close Conversation         |                                                                                        |
+| `⌘,`     | Settings                   | Standard macOS preference shortcut                                                     |
+| `⌘1-9`   | Switch to Conversation 1-9 | Based on sidebar order                                                                 |
+| `⌘L`     | Focus Input                |                                                                                        |
+| `⌘⇧S`    | Toggle Sidebar             |                                                                                        |
 
 You can also view these shortcuts in the app by clicking the keyboard icon in the sidebar footer.
 

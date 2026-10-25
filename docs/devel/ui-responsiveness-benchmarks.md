@@ -51,7 +51,7 @@ guard) until all three close.
   asserts both runs assemble byte-identical message text (same-order
   stream chunks) and record the same `mitto.ws.chunk.applied` mark count.
 - **Landed** (`mitto-sus.1.3`): the opt-in `make bench-ui` / `make
-  bench-ui-baseline` runner targets, the `writePerfSample()` /
+bench-ui-baseline` runner targets, the `writePerfSample()` /
   `loadBaseline()` / `getBaselineValue()` helpers in `tests/ui/utils/perf.ts`,
   `scripts/perf-summary.mjs` (aggregates per-run samples into a
   diff-vs-baseline report or a new committed baseline), the committed
@@ -94,23 +94,23 @@ mounts a `PerformanceObserver` covering `longtask`, `event`, `paint`,
 
 ## Instrumented seams
 
-| Mark / measure name                          | Location                                    | Captures                                   |
-| --------------------------------------------- | -------------------------------------------- | ------------------------------------------- |
-| `mitto.composer.keystroke`                    | `ChatInput.js` `handleInput`                 | Input-event start                           |
-| `mitto.composer.committed`                    | `ChatInput.js` `handleInput` (next frame)    | Draft state locally rendered                |
-| `mitto.composer.keystroke-to-committed`       | measure, the pair above                      | Keystroke → next-paint latency              |
-| `mitto.ws.chunk.applied`                      | `sessionUpdateScheduler.js` `applyUpdates`   | Background-stream chunk apply cost/cadence  |
-| `mitto.prompt.sent.local`                     | `useWSDeliveryVerification.js` `sendPrompt`  | User message locally rendered (fresh sends only) |
-| `mitto.prompt.sent.network`                   | `useWSDeliveryVerification.js` `sendPrompt`  | Prompt ACK confirmed (durable/reconnect/retry paths) |
-| `mitto.prompt.sent.local-to-network`          | measure, the pair above                      | Local render → network-confirmed latency    |
-| `mitto.ws.chunk.received`                     | `useWebSocket.js` `agent_message` handler    | Chunk arrival, paired with `mitto.ws.chunk.applied` |
-| `mitto.session.switch.click`                  | `useWebSocket.js` `switchSession`            | User-intent time for a conversation switch  |
-| `mitto.session.switch.firstPaint`             | `MessageList.js` (`useLayoutEffect` on `activeSessionId`) | New session's messages committed, pre-paint |
-| `mitto.session.switch.click-to-firstPaint`    | measure, the pair above                      | Click → next-paint latency                  |
-| `mitto.render.postprocess.tables.{start,end}` | `Message.js` agent-message `useEffect`       | Table-wrapping cost                         |
-| `mitto.render.postprocess.mermaid.{start,end}`| `Message.js` agent-message `useEffect`       | Mermaid diagram render cost                 |
-| `mitto.render.postprocess.beadsLinks.{start,end}` | `Message.js` agent-message `useEffect`   | Beads-ID linkify + preload cost             |
-| `mitto.render.postprocess.{tables,mermaid,beadsLinks}` | measures, the pairs above           | Per-processor per-message render cost       |
+| Mark / measure name                                    | Location                                                  | Captures                                             |
+| ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- |
+| `mitto.composer.keystroke`                             | `ChatInput.js` `handleInput`                              | Input-event start                                    |
+| `mitto.composer.committed`                             | `ChatInput.js` `handleInput` (next frame)                 | Draft state locally rendered                         |
+| `mitto.composer.keystroke-to-committed`                | measure, the pair above                                   | Keystroke → next-paint latency                       |
+| `mitto.ws.chunk.applied`                               | `sessionUpdateScheduler.js` `applyUpdates`                | Background-stream chunk apply cost/cadence           |
+| `mitto.prompt.sent.local`                              | `useWSDeliveryVerification.js` `sendPrompt`               | User message locally rendered (fresh sends only)     |
+| `mitto.prompt.sent.network`                            | `useWSDeliveryVerification.js` `sendPrompt`               | Prompt ACK confirmed (durable/reconnect/retry paths) |
+| `mitto.prompt.sent.local-to-network`                   | measure, the pair above                                   | Local render → network-confirmed latency             |
+| `mitto.ws.chunk.received`                              | `useWebSocket.js` `agent_message` handler                 | Chunk arrival, paired with `mitto.ws.chunk.applied`  |
+| `mitto.session.switch.click`                           | `useWebSocket.js` `switchSession`                         | User-intent time for a conversation switch           |
+| `mitto.session.switch.firstPaint`                      | `MessageList.js` (`useLayoutEffect` on `activeSessionId`) | New session's messages committed, pre-paint          |
+| `mitto.session.switch.click-to-firstPaint`             | measure, the pair above                                   | Click → next-paint latency                           |
+| `mitto.render.postprocess.tables.{start,end}`          | `Message.js` agent-message `useEffect`                    | Table-wrapping cost                                  |
+| `mitto.render.postprocess.mermaid.{start,end}`         | `Message.js` agent-message `useEffect`                    | Mermaid diagram render cost                          |
+| `mitto.render.postprocess.beadsLinks.{start,end}`      | `Message.js` agent-message `useEffect`                    | Beads-ID linkify + preload cost                      |
+| `mitto.render.postprocess.{tables,mermaid,beadsLinks}` | measures, the pairs above                                 | Per-processor per-message render cost                |
 
 ## Collectors
 
@@ -121,13 +121,13 @@ All read from the same `window.__mittoPerfBuffer` ring buffer as
 `entryType` instead of a `mitto.` name prefix) except `collectFrameStats`
 (in-page `requestAnimationFrame` sampler, no buffer needed):
 
-| Collector                          | Returns                                                    | Notes                                                                 |
-| ----------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `collectLongTasks(page)`           | `{count, maxDuration, totalBlockingTime}`                  | Reduces buffered `longtask` entries; TBT = Σ `max(duration-50, 0)`.   |
-| `collectEventTimings(page, name?)` | `{count, p50, p95}`                                        | Reduces buffered `event`/`first-input` entries, optional name filter. |
-| `collectFrameStats(page, ms)`      | `{fps, missedFrames, longestGapMs}`                        | In-page rAF sampler vs. a 60Hz baseline; no `enablePerf()` needed.    |
-| `collectPaintLayoutStats(page)`    | `{styleMs, layoutMs, paintMs, scriptingMs} \| null`         | Chromium-only (CDP `Performance.getMetrics`); cumulative — diff two calls for a window's cost. `null` elsewhere. |
-| `collectDOMStats(page)`            | `{domNodes, usedJSHeapBytes: number \| null}`               | `usedJSHeapBytes` is Chromium-only (`performance.memory`), `null` elsewhere. |
+| Collector                          | Returns                                             | Notes                                                                                                            |
+| ---------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `collectLongTasks(page)`           | `{count, maxDuration, totalBlockingTime}`           | Reduces buffered `longtask` entries; TBT = Σ `max(duration-50, 0)`.                                              |
+| `collectEventTimings(page, name?)` | `{count, p50, p95}`                                 | Reduces buffered `event`/`first-input` entries, optional name filter.                                            |
+| `collectFrameStats(page, ms)`      | `{fps, missedFrames, longestGapMs}`                 | In-page rAF sampler vs. a 60Hz baseline; no `enablePerf()` needed.                                               |
+| `collectPaintLayoutStats(page)`    | `{styleMs, layoutMs, paintMs, scriptingMs} \| null` | Chromium-only (CDP `Performance.getMetrics`); cumulative — diff two calls for a window's cost. `null` elsewhere. |
+| `collectDOMStats(page)`            | `{domNodes, usedJSHeapBytes: number \| null}`       | `usedJSHeapBytes` is Chromium-only (`performance.memory`), `null` elsewhere.                                     |
 
 ## Deterministic fixtures
 
@@ -239,18 +239,18 @@ Each row below carries a promotion decision (`mitto-sus.1.3`): **gate**
 (hard `expect()` under `PERF_RUN=1`, see the named spec), or **record-only**
 (sample is written via `writePerfSample()` for trend/context, no assertion).
 
-| # | Scenario                                                    | Budget                                             | Decision | Rationale |
-|---|--------------------------------------------------------------|-----------------------------------------------------|----------|-----------|
-| 1 | Keystroke → next-paint (idle composer)                       | p95 ≤ 50 ms (fixed)                                 | **gate** | Fundamental UX; low variance under headless Chromium. Gated on p95 only — p50 is too flake-prone. `composer-latency.spec.ts`. |
-| 2 | Keystroke → next-paint (during foreground stream)             | p95 ≤ baseline × 1.5                                | **gate** (generous) | Same fundamental, but streaming competes for the main thread — baseline-relative rather than fixed. `composer-during-stream.perf.spec.ts`. |
-| 3 | Max long task during streaming                                | ≤ 100 ms (investigate anything > 200 ms)            | record-only | Highly hardware-dependent; hard-gating would flake in CI. `composer-during-stream.perf.spec.ts` / `multi-stream.perf.spec.ts`. |
-| 4 | Missed-frame rate during streaming (60 Hz baseline)           | < 5 %                                                | record-only | `requestAnimationFrame` sampling is noisy; treated as a trend metric. `multi-stream.perf.spec.ts`. |
-| 5 | Conversation switch click → first paint                       | ≤ 120 ms local (fixed), ≤ 300 ms incl. network fetch | **gate** (local part only) | Local paint is deterministic (`session-switch-latency.spec.ts`); the network/background-stream part (`conversation-switch.perf.spec.ts`) involves mock-ACP scheduler cadence and stays record-only. |
-| 6 | `mitto.ws.chunk.received` → `mitto.ws.chunk.applied` (p95)     | ≤ baseline × 1.3                                    | **gate** | Central concern of the mitto-sus epic; must not silently regress. `ws-chunk-received-applied.spec.ts`. |
-| 7 | DOM node count per 1 000 rendered messages                   | record baseline, no hard budget yet                 | record-only | Prescribed by the bead description; DOM size varies too much with content mix to fix a number yet. `history-load.perf.spec.ts`. |
-| 8 | Retained heap growth per 10-cycle conversation-switch loop    | < 5 MB delta (leak proxy)                            | record-only (deferred) | No existing spec drives this specific 10-cycle loop yet — `collectDOMStats()`'s `usedJSHeapBytes` is recorded per history size in `history-load.perf.spec.ts` as a partial proxy, but a dedicated switch-loop harness is left to a future increment (out of scope for this measurement-foundation bead). |
-| 9 | Initial-load DOM node count per seeded history size (small/medium/max) | ≤ baseline × 1.05                          | **gate** (mitto-sus.10.1) | Deterministic proxy for unbounded DOM growth on the initial-load path (capped by `INITIAL_EVENTS_LIMIT`, see the spec's file header) without hard-coding an absolute number. `history-load.perf.spec.ts`. |
-| 10 | Per-processor render-postprocess invocation count for a single rendered message (`tables`/`mermaid`/`beadsLinks`) | ≤ baseline `n` | **gate** (mitto-sus.10.1) | A duplicate-invocation regression (e.g. a processor re-running on an unrelated re-render) grows this count independently of per-call duration, which the existing p95 sample would not catch. `render-postprocess-cost.spec.ts`. |
+| #   | Scenario                                                                                                          | Budget                                               | Decision                   | Rationale                                                                                                                                                                                                                                                                                                |
+| --- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Keystroke → next-paint (idle composer)                                                                            | p95 ≤ 50 ms (fixed)                                  | **gate**                   | Fundamental UX; low variance under headless Chromium. Gated on p95 only — p50 is too flake-prone. `composer-latency.spec.ts`.                                                                                                                                                                            |
+| 2   | Keystroke → next-paint (during foreground stream)                                                                 | p95 ≤ baseline × 1.5                                 | **gate** (generous)        | Same fundamental, but streaming competes for the main thread — baseline-relative rather than fixed. `composer-during-stream.perf.spec.ts`.                                                                                                                                                               |
+| 3   | Max long task during streaming                                                                                    | ≤ 100 ms (investigate anything > 200 ms)             | record-only                | Highly hardware-dependent; hard-gating would flake in CI. `composer-during-stream.perf.spec.ts` / `multi-stream.perf.spec.ts`.                                                                                                                                                                           |
+| 4   | Missed-frame rate during streaming (60 Hz baseline)                                                               | < 5 %                                                | record-only                | `requestAnimationFrame` sampling is noisy; treated as a trend metric. `multi-stream.perf.spec.ts`.                                                                                                                                                                                                       |
+| 5   | Conversation switch click → first paint                                                                           | ≤ 120 ms local (fixed), ≤ 300 ms incl. network fetch | **gate** (local part only) | Local paint is deterministic (`session-switch-latency.spec.ts`); the network/background-stream part (`conversation-switch.perf.spec.ts`) involves mock-ACP scheduler cadence and stays record-only.                                                                                                      |
+| 6   | `mitto.ws.chunk.received` → `mitto.ws.chunk.applied` (p95)                                                        | ≤ baseline × 1.3                                     | **gate**                   | Central concern of the mitto-sus epic; must not silently regress. `ws-chunk-received-applied.spec.ts`.                                                                                                                                                                                                   |
+| 7   | DOM node count per 1 000 rendered messages                                                                        | record baseline, no hard budget yet                  | record-only                | Prescribed by the bead description; DOM size varies too much with content mix to fix a number yet. `history-load.perf.spec.ts`.                                                                                                                                                                          |
+| 8   | Retained heap growth per 10-cycle conversation-switch loop                                                        | < 5 MB delta (leak proxy)                            | record-only (deferred)     | No existing spec drives this specific 10-cycle loop yet — `collectDOMStats()`'s `usedJSHeapBytes` is recorded per history size in `history-load.perf.spec.ts` as a partial proxy, but a dedicated switch-loop harness is left to a future increment (out of scope for this measurement-foundation bead). |
+| 9   | Initial-load DOM node count per seeded history size (small/medium/max)                                            | ≤ baseline × 1.05                                    | **gate** (mitto-sus.10.1)  | Deterministic proxy for unbounded DOM growth on the initial-load path (capped by `INITIAL_EVENTS_LIMIT`, see the spec's file header) without hard-coding an absolute number. `history-load.perf.spec.ts`.                                                                                                |
+| 10  | Per-processor render-postprocess invocation count for a single rendered message (`tables`/`mermaid`/`beadsLinks`) | ≤ baseline `n`                                       | **gate** (mitto-sus.10.1)  | A duplicate-invocation regression (e.g. a processor re-running on an unrelated re-render) grows this count independently of per-call duration, which the existing p95 sample would not catch. `render-postprocess-cost.spec.ts`.                                                                         |
 
 Rows 9–10 (mitto-sus.10.1) follow the same `PERF_RUN=1` + `getBaselineValue()`
 no-op-until-baseline-exists contract as rows 1, 2, 5, and 6 — see the env-var
@@ -355,7 +355,10 @@ so this leg is a documented manual playbook rather than a CI target:
 4. From the WebKit Inspector's JavaScript console, dump the buffer for that
    scenario:
    ```js
-   mittoPerfDump("composer.keystroke", "/tmp/mitto-perf-wkwebview/composer.keystroke.jsonl");
+   mittoPerfDump(
+     "composer.keystroke",
+     "/tmp/mitto-perf-wkwebview/composer.keystroke.jsonl",
+   );
    ```
 5. After all scenarios are recorded, concatenate the per-scenario files into
    the results directory `perf-ab.mjs` reads:

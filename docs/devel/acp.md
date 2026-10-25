@@ -322,7 +322,7 @@ advertised select next to the model selector.
   effort) and allowed values can change when the model changes. The WS
   `config_option_changed` event relays the full `config_options` snapshot;
   `connected`/`acp_started` snapshots remain authoritative.
-- **Ordering**: an idle change is acked via `session/set_config_option` *before*
+- **Ordering**: an idle change is acked via `session/set_config_option` _before_
   the next `session/prompt`. During streaming the change is deferred, does not
   affect the running turn, and is flushed before the next prompt (last write
   wins; model before dependent selects).
@@ -353,7 +353,7 @@ leaving a stale operator preference silently dangling:
 - **`session/set_model` vs `session/set_config_option`**: `SharedACPProcess.SetSessionModel`
   (`internal/acpproc/shared_acp_process.go`) calls the dedicated ACP 0.13+
   `session/set_model` RPC first; if the agent replies with JSON-RPC `-32601
-  Method not found`, Mitto falls back to the legacy generic
+Method not found`, Mitto falls back to the legacy generic
   `session/set_config_option` RPC using `conversation.ModelConfigId`. Both paths
   converge on the same reconciliation logic below — the mock ACP server
   (`tests/mocks/acp-server/types.go`) implements both for test coverage (see
@@ -393,13 +393,13 @@ leaving a stale operator preference silently dangling:
   (`keepUnadvertised=false`) performs the normal durable drop-and-notify.
 - **No universal reset token**: ACP has no standard "unset this option" RPC,
   and Mitto does not synthesize one (no empty-string/`null`/`"none"` sentinel
-  value is sent to agents). "Clearing" an option always means *not resending
-  it* — the agent's own default for the new model applies. Never add a fake
+  value is sent to agents). "Clearing" an option always means _not resending
+  it_ — the agent's own default for the new model applies. Never add a fake
   reset value to work around a specific agent's quirks; use capability
   detection in the adapter seam instead (see below).
 - **`adjustments` on `config_option_changed`**: every drop/mismatch above is
   surfaced to the frontend as a `ConfigAdjustment{ConfigID, RequestedValue?,
-  AppliedValue?, Reason}` entry (`internal/conversation/bgsession_callbacks.go`)
+AppliedValue?, Reason}` entry (`internal/conversation/bgsession_callbacks.go`)
   appended to the WebSocket `config_option_changed` broadcast's `adjustments`
   array (only present when non-empty) — see
   [WebSocket protocol spec § config_option_changed](websockets/protocol-spec.md#config_option_changed)
@@ -424,7 +424,7 @@ dropped it. `session/set_model` itself returns an empty `{}` result and emits
 its own `config_option_update` notification.
 
 **What this investigation adds**: the retained-effort behavior above was
-confirmed, but the actual Haiku *inference failure* was not. An isolated,
+confirmed, but the actual Haiku _inference failure_ was not. An isolated,
 sandboxed harness was built (separate `COPILOT_HOME`, no real credentials,
 run entirely outside the repository) to drive `copilot --acp` directly and
 attempt to reproduce the failure end-to-end (set effort on a reasoning model

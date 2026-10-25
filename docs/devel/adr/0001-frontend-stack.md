@@ -61,7 +61,7 @@ conditions.
   adding a bundler/JSX toolchain (Vite) and explicitly recommended **against
   adoption** (Option C): the six large files driving perceived complexity are
   a decomposition problem, not a build-step problem, and Vite's own output
-  was measured *larger* (raw and gzipped) than the current esbuild-based
+  was measured _larger_ (raw and gzipped) than the current esbuild-based
   CodeMirror bundle on equivalent input.
 - **Alternatives considered:** JSX + a bundler (Vite, esbuild-as-bundler) —
   would require a build step Mitto does not otherwise need (`//go:embed`

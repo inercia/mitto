@@ -124,9 +124,9 @@ cookie-only request is rejected).
   subtree never appear). `revision` is an opaque optimistic-concurrency token.
   Reads are allowed even when the config source is read-only.
 - **`POST /api/config/patch`** — body `{ ops: [{ path, value }], revision?,
-  dry_run? }`, where `path` uses the dotted/indexed `mitto config set` syntax
+dry_run? }`, where `path` uses the dotted/indexed `mitto config set` syntax
   (e.g. `web.port`, `task_label_colors[0].color`). Response: `{ dry_run,
-  applied: [{ path, status }], revision? }`. Per-key `status` is `applied`,
+applied: [{ path, status }], revision? }`. Per-key `status` is `applied`,
   `restart_required` (persisted; no automatic restart), `apply_failed`
   (persisted but the in-memory refresh failed), or `would_apply` (dry-run
   only). A live field such as `task_label_colors` persists once, refreshes

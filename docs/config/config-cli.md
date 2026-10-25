@@ -1,7 +1,7 @@
 # `mitto config get` / `mitto config set` — CLI Contract
 
 > **Status:** Both `mitto config get [PATH]` (bead `mitto-4rz.4`) and `mitto
-> config set` (bead `mitto-4rz.5`) are wired and live, composing the pure
+config set` (bead `mitto-4rz.5`) are wired and live, composing the pure
 > parser from `mitto-4rz.1`, the snapshot/mutate service from `mitto-4rz.2`,
 > and the authenticated snapshot/patch resources from `mitto-4rz.3`. The
 > parser living in `internal/config/configpath` still implements only the
@@ -17,7 +17,7 @@ below), or the whole config when `PATH` is omitted.
 - **Default (live)**: talks to a running `mitto web` server, resolved via
   `--url`/`--token`/`--api-prefix` flags, `$MITTO_URL`/`$MITTO_TOKEN`/
   `$MITTO_API_PREFIX`, or `instance.json` — same precedence as `mitto
-  conversation`/`mitto auth` (`docs/devel/cli-conversation.md` §2). Returns
+conversation`/`mitto auth` (`docs/devel/cli-conversation.md` §2). Returns
   the server's `settings.json`, always redacted server-side. A remote/auth/
   transport error is reported as-is and never silently falls back to
   reading local disk. If `--url`/`$MITTO_URL` is given explicitly without an
@@ -153,12 +153,12 @@ document are real settings.json paths:
 
 ### Value modes
 
-| Mode           | Flag            | Behavior                                                             |
-| -------------- | --------------- | ---------------------------------------------------------------------|
-| Typed          | `--set`         | Auto-detects bool / int / float / `null` / string (see below)        |
-| Forced string  | `--set-string`  | Value is always a string, even if it looks like a bool/number        |
-| Strict JSON    | `--set-json`    | Value must be valid JSON: scalar, object, or array                   |
-| File / stdin   | `--set-file`    | Value is literal file/stdin content (see "set-file semantics" below) |
+| Mode          | Flag           | Behavior                                                             |
+| ------------- | -------------- | -------------------------------------------------------------------- |
+| Typed         | `--set`        | Auto-detects bool / int / float / `null` / string (see below)        |
+| Forced string | `--set-string` | Value is always a string, even if it looks like a bool/number        |
+| Strict JSON   | `--set-json`   | Value must be valid JSON: scalar, object, or array                   |
+| File / stdin  | `--set-file`   | Value is literal file/stdin content (see "set-file semantics" below) |
 
 **`--set` typing rules:**
 
@@ -184,7 +184,7 @@ structured (objects/arrays) — it has no auto-detection surprises.
 ### `--set-file` semantics
 
 The **parser itself stays pure**: `ParseSetFile` takes a `path=content`
-string where `content` has *already been read* by the CLI layer and is
+string where `content` has _already been read_ by the CLI layer and is
 preserved **literally** — no comma-splitting (content may contain commas or
 newlines), no escape processing, no type detection.
 
@@ -203,7 +203,7 @@ treat that as the hard ceiling, not a target.
   `--set`/`--set-string`/`--set-json` flags).
 - **Mixed modes at the same exact path**: the same rule applies —
   precedence is purely by **argument order**, not by mode. `--set a=1
-  --set-json a=2` results in `a` being the JSON-decoded `2`; reversing the
+--set-json a=2` results in `a` being the JSON-decoded `2`; reversing the
   flag order reverses the winner.
 - **Ancestor/descendant conflicts are rejected, not resolved**: assigning
   both `a.b=1` and `a=2` (in either order) is an error — it's ambiguous
@@ -217,7 +217,7 @@ treat that as the hard ceiling, not a target.
 - **Absent**: the path was never mentioned; the stored value (if any) is
   untouched.
 - **`null`**: an explicit value, `--set foo=null` (or `--set-json
-  foo=null`). This **sets** the field to `null` — it does **not** delete
+foo=null`). This **sets** the field to `null` — it does **not** delete
   the key or reset it to a schema default. Deleting a key is out of scope
   for this contract (no delete verb exists in this design).
 - **Empty list**: `--set foo={}` or `--set-json foo=[]` sets an explicit
@@ -256,17 +256,17 @@ stderr text.
 
 ## Limits (enforced by the parser, fuzz-tested)
 
-| Limit                  | Constant               | Value      |
-| ----------------------- | ---------------------- | ---------- |
-| Raw `--set*` flag bytes | `MaxRawInputBytes`      | 16 KiB     |
-| `--set-file` content    | `MaxFileValueBytes`     | 1 MiB      |
-| Path segments           | `MaxPathDepth`          | 32         |
-| One key segment length  | `MaxKeySegmentLength`   | 256        |
-| Array index value       | `MaxArrayIndex`         | 10000      |
-| Brace-list / JSON array | `MaxListLength`         | 1000       |
-| JSON object keys        | `MaxJSONObjectKeys`     | 1000       |
-| JSON nesting depth      | `MaxJSONNestingDepth`   | 32         |
-| Assignments per OpSet   | `MaxOperations`         | 500        |
+| Limit                   | Constant              | Value  |
+| ----------------------- | --------------------- | ------ |
+| Raw `--set*` flag bytes | `MaxRawInputBytes`    | 16 KiB |
+| `--set-file` content    | `MaxFileValueBytes`   | 1 MiB  |
+| Path segments           | `MaxPathDepth`        | 32     |
+| One key segment length  | `MaxKeySegmentLength` | 256    |
+| Array index value       | `MaxArrayIndex`       | 10000  |
+| Brace-list / JSON array | `MaxListLength`       | 1000   |
+| JSON object keys        | `MaxJSONObjectKeys`   | 1000   |
+| JSON nesting depth      | `MaxJSONNestingDepth` | 32     |
+| Assignments per OpSet   | `MaxOperations`       | 500    |
 
 Exceeding any limit produces a typed limit error rather than panicking or
 allocating unboundedly; this is exercised by the package's native Go fuzz
@@ -276,12 +276,12 @@ tests.
 
 Mitto does **not** depend on `helm.sh/helm/v3/pkg/strvals` (out of scope,
 would need separate dependency approval). The implemented subset is
-Helm-*inspired*, not Helm-*compatible* in every corner case:
+Helm-_inspired_, not Helm-_compatible_ in every corner case:
 
 - **No implicit list-append or map-merge operators** — Helm's `--set` has
   none either, but some Helm-adjacent tools do; this parser doesn't.
 - **`null` is a value, never a delete**. (Helm's `--set` uses `null` to
-  *remove* a key when merging with `--values` files — a values-merge
+  _remove_ a key when merging with `--values` files — a values-merge
   concept that doesn't apply here, since there is no base values file being
   overlaid.)
 - **Leading-zero tokens are always strings**, never silently reinterpreted

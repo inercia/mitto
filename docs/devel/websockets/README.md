@@ -102,38 +102,38 @@ graph TB
 
 ### Backend → Frontend Messages (Session WS)
 
-| Type                              | Purpose                                     |
-| --------------------------------- | ------------------------------------------- |
-| `connected`                       | Connection established                      |
-| `prompt_received`                 | Prompt ACK                                  |
-| `user_prompt`                     | Broadcast of user prompt to all clients     |
-| `agent_message`                   | Streaming agent response (HTML + markdown)  |
-| `agent_thought`                   | Agent thinking/reasoning (plain text)       |
-| `tool_call` / `tool_update`       | Tool invocations and status updates         |
-| `plan`                            | Agent task plan                             |
-| `file_read` / `file_write`        | File operations by agent                    |
-| `events_loaded`                   | Response to `load_events`                   |
-| `keepalive_ack`                   | Connection health + state sync              |
-| `prompt_complete`                 | Agent finished responding                   |
-| `ui_prompt` / `ui_prompt_dismiss` | Interactive prompts (MCP, permissions)      |
-| `action_buttons`                  | AI-generated follow-up suggestions          |
-| `available_commands_updated`      | Agent's available slash commands            |
+| Type                              | Purpose                                                |
+| --------------------------------- | ------------------------------------------------------ |
+| `connected`                       | Connection established                                 |
+| `prompt_received`                 | Prompt ACK                                             |
+| `user_prompt`                     | Broadcast of user prompt to all clients                |
+| `agent_message`                   | Streaming agent response (HTML + markdown)             |
+| `agent_thought`                   | Agent thinking/reasoning (plain text)                  |
+| `tool_call` / `tool_update`       | Tool invocations and status updates                    |
+| `plan`                            | Agent task plan                                        |
+| `file_read` / `file_write`        | File operations by agent                               |
+| `events_loaded`                   | Response to `load_events`                              |
+| `keepalive_ack`                   | Connection health + state sync                         |
+| `prompt_complete`                 | Agent finished responding                              |
+| `ui_prompt` / `ui_prompt_dismiss` | Interactive prompts (MCP, permissions)                 |
+| `action_buttons`                  | AI-generated follow-up suggestions                     |
+| `available_commands_updated`      | Agent's available slash commands                       |
 | `config_option_changed`           | Config option changed (full `config_options` snapshot) |
-| `error`                           | Error notification                          |
-| `session_gone`                    | Terminal: session no longer exists          |
-| `session_reset`                   | Session was forcefully reset                |
-| `session_renamed`                 | Session name changed                        |
-| `session_beads_issue_updated`     | Linked beads issue changed or cleared       |
-| `acp_stopped` / `acp_started`     | ACP process lifecycle                       |
-| `acp_start_failed`                | ACP process failed to start                 |
-| `acp_error_permanent`             | Permanent ACP error with user guidance      |
-| `runner_fallback`                 | Runner fell back to exec mode               |
-| `hook_failed`                     | Lifecycle hook execution failed             |
-| `mcp_tools_unavailable`           | MCP tools not available in workspace        |
-| `queue_updated`                   | Queue state changed                         |
-| `queue_message_sending/sent`      | Queue message delivery lifecycle            |
-| `queue_message_titled`            | Queue message received auto-generated title |
-| `queue_reordered`                 | Queue order changed                         |
+| `error`                           | Error notification                                     |
+| `session_gone`                    | Terminal: session no longer exists                     |
+| `session_reset`                   | Session was forcefully reset                           |
+| `session_renamed`                 | Session name changed                                   |
+| `session_beads_issue_updated`     | Linked beads issue changed or cleared                  |
+| `acp_stopped` / `acp_started`     | ACP process lifecycle                                  |
+| `acp_start_failed`                | ACP process failed to start                            |
+| `acp_error_permanent`             | Permanent ACP error with user guidance                 |
+| `runner_fallback`                 | Runner fell back to exec mode                          |
+| `hook_failed`                     | Lifecycle hook execution failed                        |
+| `mcp_tools_unavailable`           | MCP tools not available in workspace                   |
+| `queue_updated`                   | Queue state changed                                    |
+| `queue_message_sending/sent`      | Queue message delivery lifecycle                       |
+| `queue_message_titled`            | Queue message received auto-generated title            |
+| `queue_reordered`                 | Queue order changed                                    |
 
 ### Backend → Frontend Messages (Global Events WS)
 

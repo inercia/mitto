@@ -104,7 +104,7 @@ authentication depends on the transport path:
   unchanged.
 - **Shared OpenCode path** (shared ACP process, exact OpenCode name, capability
   `FeatureMCPCallerSession` supported, OpenCode v2+): every conversation gets an
-  *identical* `mitto` descriptor, with the same name, URL and
+  _identical_ `mitto` descriptor, with the same name, URL and
   `X-Mitto-Shared-Secret` header. The secret is random per Mitto process, kept
   in memory only, and never logged or persisted. OpenCode's MCP registry is
   workspace/Location-scoped by server name, so per-conversation headers would

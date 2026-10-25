@@ -78,16 +78,16 @@ The file is automatically loaded when you open a workspace in Mitto and reloaded
 
 The following fields are stored in `workspaces.json` and edited through the UI. The most commonly changed ones:
 
-| Field                       | Type    | Description                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| --------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `acp_server`                | string  | Name of the ACP server for this workspace                                                                                                                                                                                                                                                                                                                                                                                           |
-| `auxiliary_model_selection` | object  | Optional model selection for auxiliary sessions (title generation, follow-up analysis, etc.). When set, auxiliary sessions start on the workspace's main ACP server and switch to the best-matching available model. When unset, the ACP server's default model is used. Object has two fields: `matchMode` (one of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`) and `pattern` (the text to match against model names). |
-| `auxiliary_model_tag`       | string  | Selects the auxiliary-session model by capability tag (e.g. `Fast`), resolved to the first Model profile (`Config.Models`, in definition order) carrying this tag whose criteria matches an available model. Precedence is `auxiliary_model_profile` > `auxiliary_model_tag` > `auxiliary_model_selection`; when none is set the global `conversations.auxiliary_model_tag` applies (see [models.md](models.md#auxiliary-conversations-conversationsauxiliary_model_tag)).                                                                                                                         |
-| `restricted_runner`         | string  | Sandbox type: `exec` (default), `sandbox-exec`, `firejail`, `docker`                                                                                                                                                                                                                                                                                                                                                                |
-| `auto_approve`              | boolean | Auto-approve all agent tool-call permission requests. **Deprecated**: superseded by `permissions.mode` (see [Permission Modes](#permission-modes) below). Still read for backward compatibility and migrated automatically to an equivalent `permissions.mode` when unset; new configuration should use `permissions` instead.                                                                                                    |
-| `is_default`                | boolean | Marks this workspace as the default for its folder. When several workspaces share the same directory (e.g. different ACP servers or model variants), the default is preferred when a workspace must be resolved from the folder alone (no ACP server specified). At most one workspace per folder should set this.                                                                                                                  |
-| `acp_command_override`      | string  | Custom command line for the ACP server (overrides the server's default command)                                                                                                                                                                                                                                                                                                                                                     |
-| `permissions`               | object  | Configures the permission-mode system (`mode` + optional `system_one`). See [Permission Modes](#permission-modes) below.                                                                                                                                                                                                                                                                                                            |
+| Field                       | Type    | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `acp_server`                | string  | Name of the ACP server for this workspace                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `auxiliary_model_selection` | object  | Optional model selection for auxiliary sessions (title generation, follow-up analysis, etc.). When set, auxiliary sessions start on the workspace's main ACP server and switch to the best-matching available model. When unset, the ACP server's default model is used. Object has two fields: `matchMode` (one of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`) and `pattern` (the text to match against model names).                                        |
+| `auxiliary_model_tag`       | string  | Selects the auxiliary-session model by capability tag (e.g. `Fast`), resolved to the first Model profile (`Config.Models`, in definition order) carrying this tag whose criteria matches an available model. Precedence is `auxiliary_model_profile` > `auxiliary_model_tag` > `auxiliary_model_selection`; when none is set the global `conversations.auxiliary_model_tag` applies (see [models.md](models.md#auxiliary-conversations-conversationsauxiliary_model_tag)). |
+| `restricted_runner`         | string  | Sandbox type: `exec` (default), `sandbox-exec`, `firejail`, `docker`                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `auto_approve`              | boolean | Auto-approve all agent tool-call permission requests. **Deprecated**: superseded by `permissions.mode` (see [Permission Modes](#permission-modes) below). Still read for backward compatibility and migrated automatically to an equivalent `permissions.mode` when unset; new configuration should use `permissions` instead.                                                                                                                                             |
+| `is_default`                | boolean | Marks this workspace as the default for its folder. When several workspaces share the same directory (e.g. different ACP servers or model variants), the default is preferred when a workspace must be resolved from the folder alone (no ACP server specified). At most one workspace per folder should set this.                                                                                                                                                         |
+| `acp_command_override`      | string  | Custom command line for the ACP server (overrides the server's default command)                                                                                                                                                                                                                                                                                                                                                                                            |
+| `permissions`               | object  | Configures the permission-mode system (`mode` + optional `system_one`). See [Permission Modes](#permission-modes) below.                                                                                                                                                                                                                                                                                                                                                   |
 
 ### Permission Modes
 
@@ -120,35 +120,35 @@ permissions:
 
 **`mode` values:**
 
-| Value          | Meaning                                                                          |
-| -------------- | --------------------------------------------------------------------------------- |
-| `""` (unset)   | Inherit from the next broader scope (workspace → ACP server → global). Never persisted explicitly by the UI. |
-| `ask`          | Prompt the user for every tool-call permission request (default interactive behavior). |
-| `allow`        | Auto-approve all tool-call permission requests. Equivalent to the legacy `auto_approve: true`. |
-| `system_one`   | Delegate the approve/deny decision to an external safety-check endpoint (see `system_one` below). |
+| Value        | Meaning                                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------------------ |
+| `""` (unset) | Inherit from the next broader scope (workspace → ACP server → global). Never persisted explicitly by the UI. |
+| `ask`        | Prompt the user for every tool-call permission request (default interactive behavior).                       |
+| `allow`      | Auto-approve all tool-call permission requests. Equivalent to the legacy `auto_approve: true`.               |
+| `system_one` | Delegate the approve/deny decision to an external safety-check endpoint (see `system_one` below).            |
 
 **`system_one` fields** (required when `mode: system_one`):
 
-| Field              | Type     | Constraints                                                                 | Default                                                    |
-| ------------------ | -------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `endpoint`         | string   | Must be `https://`, or `http://` only for loopback (`127.0.0.1`, `localhost`, `::1`) | `https://api.typesafe.ai/v1/systemone`                       |
-| `payload_template` | string   | Non-empty; JSON body template rendered per permission request                | `{"action":"{{.Action}}","command":"{{.Command}}"}`          |
-| `result_field`     | string   | Must match `^[A-Za-z0-9_-]+$`                                                 | `is_safe`                                                    |
-| `threshold`        | float    | Must be in `[0, 1]`                                                          | `0.5`                                                        |
-| `timeout`          | duration | Must be in `[1s, 60s]`                                                        | `10s`                                                        |
-| `on_deny`          | string   | `ask` or `reject` — fallback behavior when the endpoint denies the request    | `ask`                                                        |
-| `on_error`         | string   | `ask` or `reject` — fallback behavior when the endpoint call fails/times out  | `ask`                                                        |
+| Field              | Type     | Constraints                                                                          | Default                                             |
+| ------------------ | -------- | ------------------------------------------------------------------------------------ | --------------------------------------------------- |
+| `endpoint`         | string   | Must be `https://`, or `http://` only for loopback (`127.0.0.1`, `localhost`, `::1`) | `https://api.typesafe.ai/v1/systemone`              |
+| `payload_template` | string   | Non-empty; JSON body template rendered per permission request                        | `{"action":"{{.Action}}","command":"{{.Command}}"}` |
+| `result_field`     | string   | Must match `^[A-Za-z0-9_-]+$`                                                        | `is_safe`                                           |
+| `threshold`        | float    | Must be in `[0, 1]`                                                                  | `0.5`                                               |
+| `timeout`          | duration | Must be in `[1s, 60s]`                                                               | `10s`                                               |
+| `on_deny`          | string   | `ask` or `reject` — fallback behavior when the endpoint denies the request           | `ask`                                               |
+| `on_error`         | string   | `ask` or `reject` — fallback behavior when the endpoint call fails/times out         | `ask`                                               |
 
 **Migrating from `auto_approve`**: when `permissions.mode` is unset, the legacy
 `auto_approve` boolean (if present) is migrated automatically:
 
-| `auto_approve`        | Scope             | Resulting mode |
-| ---------------------- | ----------------- | -------------- |
-| unset (`nil`)           | global            | `allow`        |
-| unset (`nil`)           | workspace/ACP server | unset (inherit) |
-| `true`                  | any scope         | `allow`        |
-| `false`                 | global            | `ask`          |
-| `false`                 | workspace/ACP server | unset (inherit) |
+| `auto_approve` | Scope                | Resulting mode  |
+| -------------- | -------------------- | --------------- |
+| unset (`nil`)  | global               | `allow`         |
+| unset (`nil`)  | workspace/ACP server | unset (inherit) |
+| `true`         | any scope            | `allow`         |
+| `false`        | global               | `ask`           |
+| `false`        | workspace/ACP server | unset (inherit) |
 
 Setting both `permissions.mode` and the legacy `auto_approve` on the same
 scope logs a warning at load time; `permissions.mode` always wins.

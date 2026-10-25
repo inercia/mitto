@@ -164,9 +164,9 @@ mitto web --debug
 ## Related Documentation
 
 | Topic              | Location                                                       |
-| ------------------ | ---------------------------------------------------------------- |
-| Web Configuration  | [web/README.md](web/README.md)                                   |
-| Authentication     | [web/README.md](web/README.md#authentication)                    |
-| Passkey (WebAuthn) | [web/README.md](web/README.md#passkey-webauthn-authentication)   |
-| Lifecycle Hooks    | [web/README.md](web/README.md#lifecycle-hooks)                   |
-| Security Settings  | [web/README.md](web/README.md#security-configuration)            |
+| ------------------ | -------------------------------------------------------------- |
+| Web Configuration  | [web/README.md](web/README.md)                                 |
+| Authentication     | [web/README.md](web/README.md#authentication)                  |
+| Passkey (WebAuthn) | [web/README.md](web/README.md#passkey-webauthn-authentication) |
+| Lifecycle Hooks    | [web/README.md](web/README.md#lifecycle-hooks)                 |
+| Security Settings  | [web/README.md](web/README.md#security-configuration)          |

@@ -142,14 +142,14 @@ The analysis looks for:
 
 ### Input Capping (cost control)
 
-The analyzer only needs the *question* the agent ended with, so its input is
+The analyzer only needs the _question_ the agent ended with, so its input is
 bounded regardless of response size. `auxiliary.TruncateTailBiased` (in
 `internal/auxiliary/utils.go`) is applied to both inputs:
 
-| Input              | Cap constant                          | Default   |
-| ------------------ | ------------------------------------- | --------- |
-| Agent message      | `auxiliary.FollowUpMaxAgentChars`     | 2000 runes |
-| User prompt        | `auxiliary.FollowUpMaxUserPromptChars`| 800 runes |
+| Input         | Cap constant                           | Default    |
+| ------------- | -------------------------------------- | ---------- |
+| Agent message | `auxiliary.FollowUpMaxAgentChars`      | 2000 runes |
+| User prompt   | `auxiliary.FollowUpMaxUserPromptChars` | 800 runes  |
 
 Strategy: keep the **first paragraph** (capped at ¼ of the budget), an
 elision marker (`[...]`), then as much of the **tail** as fits. Truncation is

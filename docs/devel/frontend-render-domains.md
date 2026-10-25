@@ -18,13 +18,13 @@ actually changed.
 
 ## The five render domains
 
-| Domain | Owning component | State it consumes | What should trigger its re-render |
-|---|---|---|---|
-| Root / global | `App` (`app.js`) | Connection status, active session id, dialogs, workspaces, config options | Any state genuinely global (connection, active session switch, dialog open/close) |
-| Navigation / sidebar | `SessionList` (`components/SessionList.js`) | The list of sessions' **summary** fields (title, archived, pinned, color, loop state) | A session's summary fields changing, or the session list membership changing — **not** a background session's message stream |
-| Active conversation | `MessageList` (`components/MessageList.js`) | The **active** session's messages array | The active session's own messages changing — **not** any other session's messages |
-| Composer | `ChatInput` (`components/ChatInput.js`) | Draft text (via `utils/draftStore.js`, mitto-sus.6), queue state, config options | Keystrokes in the mounted composer only — never another session's draft |
-| Global notifications | `ToastContainer` (`components/ToastContainer.js`) | The active toast stack (`useToast`) | A toast being shown/dismissed |
+| Domain               | Owning component                                  | State it consumes                                                                     | What should trigger its re-render                                                                                            |
+| -------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Root / global        | `App` (`app.js`)                                  | Connection status, active session id, dialogs, workspaces, config options             | Any state genuinely global (connection, active session switch, dialog open/close)                                            |
+| Navigation / sidebar | `SessionList` (`components/SessionList.js`)       | The list of sessions' **summary** fields (title, archived, pinned, color, loop state) | A session's summary fields changing, or the session list membership changing — **not** a background session's message stream |
+| Active conversation  | `MessageList` (`components/MessageList.js`)       | The **active** session's messages array                                               | The active session's own messages changing — **not** any other session's messages                                            |
+| Composer             | `ChatInput` (`components/ChatInput.js`)           | Draft text (via `utils/draftStore.js`, mitto-sus.6), queue state, config options      | Keystrokes in the mounted composer only — never another session's draft                                                      |
+| Global notifications | `ToastContainer` (`components/ToastContainer.js`) | The active toast stack (`useToast`)                                                   | A toast being shown/dismissed                                                                                                |
 
 ## Instrumentation: render counters (`utils/renderCounters.js`)
 
@@ -63,7 +63,7 @@ per-session server state:
 - `hooks/useSessionsStore.js` wraps the subscribe functions with
   `useState` + `useEffect` (Preact does not export `useSyncExternalStore`),
   mirroring the existing `useEffect(() => { setLocalText(...); return
-  subscribeDraft(sessionId, setLocalText); }, [sessionId])` pattern in
+subscribeDraft(sessionId, setLocalText); }, [sessionId])` pattern in
   `ChatInput.js`.
 
 ## Status of this increment (mitto-sus.7)
@@ -224,8 +224,8 @@ inspecting the live render tree, did not match several real consumers):
   `App`. Self-subscribing them would have altered their edit/staging
   semantics for no render-isolation benefit; left unmigrated.
 - `NewSessionWorkspaceDialog.js` receives `workspaceDialog.filteredWorkspaces
-  || workspaces` from `App` — a conditional substitution of an
-  `App`-computed *filtered* variant, not a pure pass-through of the global
+|| workspaces` from `App` — a conditional substitution of an
+  `App`-computed _filtered_ variant, not a pure pass-through of the global
   list. Left prop-driven from `App`'s own (now store-backed) `workspaces`
   value; functionally unchanged.
 - `AddFolderDialog.js` does not consume `workspaces` at all (a different,

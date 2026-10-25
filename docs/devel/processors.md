@@ -307,7 +307,7 @@ The loader enforces 16 strict rules. Processors that fail any rule are skipped w
 | 5   | `on: agentResponded` forbids `mutate:`                                                             |
 | 6   | `on: agentResponded` forbids `when.rerun:`                                                         |
 | 7   | `on: agentResponded` forbids `output: transform/prepend/append`                                    |
-| 8   | `on: agentResponded` defaults `stopReasons` to `["endTurn"]` if not specified                     |
+| 8   | `on: agentResponded` defaults `stopReasons` to `["endTurn"]` if not specified                      |
 | 9   | `on: userPrompt` forbids `when.stopReasons:`                                                       |
 | 10  | `on: userPrompt` forbids `when.excludeOrigins:`                                                    |
 | 11  | Text-mode processors (`text:` set, `command:` empty) require `mutate: prepend` or `mutate: append` |
@@ -653,7 +653,7 @@ tokens (before-phase, `primary` target, `prepend`/`append`/`replace` mode),
 auxiliary-target tokens, rerun/skip counts, and a top-3 per-processor
 ranking — surfaced in `ConversationPropertiesPanel.js`'s Statistics section.
 Since `PromptSeq` is always `0` today (see above), "last prompt" is
-determined by seq ordering instead: before-phase runs are persisted *before*
+determined by seq ordering instead: before-phase runs are persisted _before_
 their own triggering `user_prompt` event's seq is committed, so a run
 belongs to the most recent prompt when its own seq falls strictly between
 the two most recent `user_prompt` seqs. All fields are omitted from the

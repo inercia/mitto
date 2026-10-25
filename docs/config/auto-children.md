@@ -76,10 +76,10 @@ Auto-children are configured in `workspaces.json` (located in the Mitto data dir
 
 ### AutoChild Fields
 
-| Field                   | Required | Description                                                                                                                                                                                             |
-| ----------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`                 | Yes      | Name displayed for the child conversation                                                                                                                                                              |
-| `target_workspace_uuid` | No       | UUID of the workspace to use for the child. Defaults to the parent's own workspace.                                                                                                                    |
+| Field                   | Required | Description                                                                                                                                                                                                                                                                                               |
+| ----------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `title`                 | Yes      | Name displayed for the child conversation                                                                                                                                                                                                                                                                 |
+| `target_workspace_uuid` | No       | UUID of the workspace to use for the child. Defaults to the parent's own workspace.                                                                                                                                                                                                                       |
 | `model_tag`             | No       | Capability tag (e.g. `"Coding"`, `"Fast"`) selecting the child's initial model. Resolved lazily, once the child's own agent reports its models — see [Model Selection](#model-selection). Empty falls back to the target workspace's/ACP server's own initial-model preference, then the agent's default. |
 
 ### Model Selection
