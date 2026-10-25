@@ -874,7 +874,7 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 }
 
 // TestDiscuss_ThreeModeTargetResolution tests the three target-bead
-// resolution branches of beads-issue-assess.prompt.yaml:
+// resolution branches of beads-issues/discuss.prompt.yaml:
 //
 //	(a) .Session.BeadsIssue set  → "linked-issue" mode: bead ID appears, no
 //	    "no linked bead" prose
@@ -888,12 +888,12 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issues/assess.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/discuss.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issues/assess.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/discuss.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -924,7 +924,7 @@ func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 
 	render := func(ctx *cel.PromptEnabledContext) string {
 		funcs := cel.BuildTemplateFuncMap(ctx)
-		out, rerr := RenderPromptTemplate("beads-issue-assess", body, ctx, funcs)
+		out, rerr := RenderPromptTemplate("beads-issue-discuss", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
 		}
@@ -1307,107 +1307,7 @@ func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
 	}
 	// No bd commands or id-greps must appear in current-problem mode.
-	forbidden := []string{"bd show", "bd dep", `grep -i "`, "bd update", "bd comment"}
-	for _, cmd := range forbidden {
-		if strings.Contains(outC, cmd) {
-			t.Errorf("branch (c): forbidden pattern %q leaked into current-problem-mode output:\n%s", cmd, outC)
-		}
-	}
-}
-
-// TestResolved_ThreeModeTargetResolution tests the three target-bead
-// resolution branches of beads-issue-resolved.prompt.yaml:
-//
-//	(a) .Session.BeadsIssue set  → "linked-issue" mode: bead ID appears, no
-//	    "no linked bead" prose
-//	(b) .Args.IssueID set only   → "arg" mode: bead ID appears, no
-//	    "no linked bead" prose
-//	(c) neither set              → "current problem" mode: "no linked bead"
-//	    prose appears AND no bd commands or id-greps leak
-//
-// Also asserts the YAML header migration: menus includes both "beadsIssues"
-// and "conversation", and the IssueID parameter is non-required.
-func TestResolved_ThreeModeTargetResolution(t *testing.T) {
-	installBuiltinFragmentsForTest(t)
-	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issues/resolved.prompt.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Skipf("prompt file not found at %s: %v", path, err)
-	}
-	prompt, err := ParsePromptFile("beads-issues/resolved.prompt.yaml", data, time.Now())
-	if err != nil {
-		t.Fatalf("ParsePromptFile: %v", err)
-	}
-	body := prompt.Content
-
-	// Header assertions.
-	if !strings.Contains(prompt.Menus, "beadsIssues") {
-		t.Errorf("expected Menus to contain 'beadsIssues'; got %q", prompt.Menus)
-	}
-	if !strings.Contains(prompt.Menus, "conversation") {
-		t.Errorf("expected Menus to contain 'conversation'; got %q", prompt.Menus)
-	}
-	var issueParam *PromptParameter
-	for i := range prompt.Parameters {
-		if prompt.Parameters[i].Name == "IssueID" {
-			issueParam = &prompt.Parameters[i]
-			break
-		}
-	}
-	if issueParam == nil {
-		t.Fatalf("IssueID parameter not found in prompt.Parameters")
-	}
-	if issueParam.Required == nil {
-		t.Errorf("IssueID parameter: expected Required to be explicitly set (*bool non-nil); got nil")
-	} else if *issueParam.Required {
-		t.Errorf("IssueID parameter: expected Required == false; got true")
-	}
-
-	render := func(ctx *cel.PromptEnabledContext) string {
-		funcs := cel.BuildTemplateFuncMap(ctx)
-		out, rerr := RenderPromptTemplate("beads-issue-resolved", body, ctx, funcs)
-		if rerr != nil {
-			t.Fatalf("RenderPromptTemplate: %v", rerr)
-		}
-		return out
-	}
-
-	// (a) Linked-issue mode: Session.BeadsIssue set.
-	ctxA := &cel.PromptEnabledContext{
-		Session: cel.SessionContext{
-			BeadsIssue:    "mitto-abc",
-			HasBeadsIssue: true,
-		},
-	}
-	outA := render(ctxA)
-	if !strings.Contains(outA, "mitto-abc") {
-		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
-	}
-	if strings.Contains(outA, "no linked bead") {
-		t.Errorf("branch (a): unexpected 'no linked bead' text; session.BeadsIssue should have been used")
-	}
-
-	// (b) Arg mode: only Args.IssueID set.
-	ctxB := &cel.PromptEnabledContext{
-		Args: map[string]string{"IssueID": "mitto-xyz"},
-	}
-	outB := render(ctxB)
-	if !strings.Contains(outB, "mitto-xyz") {
-		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
-	}
-	if strings.Contains(outB, "no linked bead") {
-		t.Errorf("branch (b): unexpected 'no linked bead' text; Args.IssueID should have been used")
-	}
-
-	// (c) Current-problem mode: neither BeadsIssue nor Args.IssueID set.
-	ctxC := &cel.PromptEnabledContext{}
-	outC := render(ctxC)
-	if !strings.Contains(outC, "no linked bead") {
-		t.Errorf("branch (c): expected 'no linked bead' prose in output; got:\n%s", outC)
-	}
-	// No bd commands or id-greps must appear in current-problem mode.
-	forbidden := []string{"bd show", "bd dep", "bd close", "bd create", "bd update", `grep -i "`}
+	forbidden := []string{"bd show", "bd dep", `grep -i "`, "bd update", "bd comment", "bd close", "bd create"}
 	for _, cmd := range forbidden {
 		if strings.Contains(outC, cmd) {
 			t.Errorf("branch (c): forbidden pattern %q leaked into current-problem-mode output:\n%s", cmd, outC)
@@ -2607,7 +2507,7 @@ func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 		{
 			file:         "beads-issues/feature-phase-plan.prompt.yaml",
 			name:         "Feature — plan phase",
-			expectedTier: "Reasoning",
+			expectedTier: "Smartest",
 		},
 		{
 			file:         "beads-issues/feature-phase-implement.prompt.yaml",
@@ -2816,7 +2716,7 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 		{"beads-issues/fix-phase-investigate.prompt.yaml", "Reasoning"},
 		{"beads-issues/fix-phase-reproduce.prompt.yaml", "Coding"},
 		{"beads-issues/fix-phase-fix.prompt.yaml", "Coding"},
-		{"beads-issues/feature-phase-plan.prompt.yaml", "Reasoning"},
+		{"beads-issues/feature-phase-plan.prompt.yaml", "Smartest"},
 		{"beads-issues/feature-phase-implement.prompt.yaml", "Coding"},
 		{"beads-issues/feature-phase-test.prompt.yaml", "Coding"},
 		{"beads-issues/feature-phase-review.prompt.yaml", "Reasoning"},
@@ -2832,6 +2732,9 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 			p, err := ParsePromptFile(tc.file, data, time.Now())
 			if err != nil {
 				t.Fatalf("ParsePromptFile(%s): %v", tc.file, err)
+			}
+			if len(p.PreferredModels) != 1 || p.PreferredModels[0].ModelTag != tc.tier {
+				t.Errorf("preferred models = %+v, want only %s", p.PreferredModels, tc.tier)
 			}
 			body := p.Content
 
@@ -2941,7 +2844,7 @@ func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
 		{"beads-issues/fix-phase-investigate.prompt.yaml", "Investigation [tier: Reasoning]:"},
 		{"beads-issues/fix-phase-reproduce.prompt.yaml", "Reproduction [tier: Coding]:"},
 		{"beads-issues/fix-phase-fix.prompt.yaml", "Fix [tier: Coding]:"},
-		{"beads-issues/feature-phase-plan.prompt.yaml", "Plan [tier: Reasoning]:"},
+		{"beads-issues/feature-phase-plan.prompt.yaml", "Plan [tier: Smartest]:"},
 		{"beads-issues/feature-phase-implement.prompt.yaml", "Implementation [tier: Coding]:"},
 		{"beads-issues/feature-phase-test.prompt.yaml", "Testing [tier: Coding]:"},
 		{"beads-issues/feature-phase-review.prompt.yaml", "Review [tier: Reasoning]:"},

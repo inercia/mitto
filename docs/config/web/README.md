@@ -93,8 +93,9 @@ Configure quick-access prompts that appear in the chat interface. Prompts are a
 prompts:
   - name: "Continue"
     prompt: "Please continue with the current task."
-  - name: "Propose a plan"
-    prompt: "Please propose a plan for the current task."
+  - name: "Propose something"
+    prompt: "Review this conversation and propose a concrete next move or a concise plan."
+    menus: conversation
     backgroundColor: "#E8F5E9" # Optional: custom background color
   - name: "Write tests"
     prompt: "Please write tests for the code you just created."
@@ -475,8 +476,9 @@ Caddy automatically handles WebSocket upgrades and HTTPS.
 prompts:
   - name: "Continue"
     prompt: "Please continue with the current task."
-  - name: "Propose a plan"
-    prompt: "Please propose a plan for the current task."
+  - name: "Propose something"
+    prompt: "Review this conversation and propose a concrete next move or a concise plan."
+    menus: conversation
     backgroundColor: "#E8F5E9"
   - name: "Code Review"
     prompt: "Please review this code for issues."

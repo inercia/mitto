@@ -1,0 +1,93 @@
+icon: lightbulb
+name: Propose something
+description: Propose a concrete next move or a concise plan based on this conversation
+group: Work flow
+menus: conversation
+backgroundColor: '#FFF9C4'
+enabledWhen: 'Session.HasMessages'
+prompt: |
+  Review this conversation and propose a useful way forward. This is a conversation-level
+  analysis, not a ticket status check or a request to implement anything.
+
+  ## Understand what we need
+
+  - Identify the problem we are actually trying to solve and the outcome the user wants.
+    Use the latest user clarifications over earlier assumptions or superseded plans.
+  - Identify what is preventing progress: missing evidence, an unresolved decision,
+    conflicting constraints, an unsuccessful approach, circular discussion, or an unclear
+    next step. Distinguish confirmed blockers from uncertainty; do not invent a blocker
+    if the conversation is already making progress.
+  - Separate user requirements from agent suggestions and assumptions. An earlier proposal
+    is not an approved requirement. Notice approaches already tried or rejected and why;
+    do not simply repeat them unless new evidence changes the tradeoff.
+  - Check recent agent questions and decision requests for an unanswered item that is
+    still relevant. Do not reopen questions already answered, rejected, or superseded
+    by later user direction.
+
+  ## Propose a way forward
+
+  Recommend one concrete, proportionate next move that advances the user's actual goal
+  or resolves the most important uncertainty. It may be a smaller experiment, a simpler
+  approach, a decision, a targeted question, or a useful reframing of the problem.
+  Explain why it helps, the main tradeoff, and what observable result would tell us
+  whether it worked. Prefer the smallest reversible step that can unlock progress;
+  avoid speculative features, a broad roadmap, or a generic list of tasks.
+
+  If a recent question or decision request went unanswered, do not merely repeat it
+  or say that you are waiting. Recommend a specific answer, decision, or path using
+  the user's goals and constraints, and give a short reason for the recommendation.
+  When there are meaningful alternatives, offer at most two alternatives alongside
+  the recommended path; give each a short reason and the key tradeoff or circumstance
+  in which it would be preferable. Do not manufacture options just to fill a menu.
+  Present these choices through the Mitto UI options described below, with the
+  recommended path clearly marked. Recommend a direction, but do not select it or
+  infer approval from the unanswered question.
+
+  If a safe recommendation depends on information only the user can provide, state
+  that uncertainty and offer conditional paths or a bounded evidence-gathering step.
+  Ask only the essential remaining question; do not invent the user's preferences
+  or disguise an unresolved safety-critical decision as an established answer.
+
+  When the goal is clear but needs several steps, propose a concise plan instead of
+  forcing everything into one action. Include the goal and scope (with non-goals),
+  current state, ordered steps, dependencies, material risks and mitigations, and
+  verification with observable completion criteria. Keep detail proportional to the
+  task. Name likely files or implementation details only when supported by inspected
+  evidence already available in the conversation; otherwise label them as assumptions
+  or proposed investigation, not verified facts. Do not impose ticket creation or
+  a simple/complex workflow on the user.
+
+  Base the proposal on evidence available in the conversation. If essential context is
+  missing, say what is unknown and ask the single most useful clarifying question, or
+  propose a bounded evidence-gathering step instead of presenting a guess as fact.
+  If there is no genuine blocker, recommend the natural next step without manufacturing
+  a diagnosis. Do not assume this is a coding task or require a Beads workspace.
+
+  Keep the response concise:
+
+  - **Goal:** the problem and desired outcome.
+  - **What is holding us back:** the reason, with supporting conversation evidence, or
+    explicitly say that no blocker is apparent.
+  - **My proposal:** one recommended next move and why it is preferable. Include at most
+    two alternatives only when they represent a meaningful tradeoff.
+  - **First step and success signal:** a specific action or question and how we will
+    know it helped. State any material assumption that needs confirmation.
+
+  ## Use Mitto UI for decisions
+
+  When the user only needs to confirm something or choose between several options,
+  use `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` rather than asking them
+  to type a confirmation or option name. Mark the recommended choice and provide a
+  revise/decline choice. For genuinely open-ended missing information, use
+  `mitto_ui_form(self_id: "{{ .Session.ID }}", ...)`; use `mitto_ui_textbox` only
+  when the user needs to edit a proposed plan. Do not force an unnecessary decision
+  when the proposal itself is enough.
+
+  Choices here confirm a direction or revise the proposal only; they do not authorize
+  implementation or ticket creation. A submitted form or edited plan is not execution
+  approval. If the relevant UI tool is unavailable, ask concisely in conversation and
+  wait. Cancellation, timeout, or no response is not consent; never choose for the user.
+
+  This is advice only. Do not execute the proposal, edit files, run commands, change
+  tickets, create issues or child conversations, or start a driver. Do not treat invoking
+  this prompt as approval to act. Finish with the proposal and wait for the user's direction.

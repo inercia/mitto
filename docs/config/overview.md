@@ -157,8 +157,9 @@ acp:
 prompts:
   - name: "Continue"
     prompt: "Please continue with the current task."
-  - name: "Propose a plan"
-    prompt: "Please propose a plan for the current task."
+  - name: "Propose something"
+    prompt: "Review this conversation and propose a concrete next move or a concise plan."
+    menus: conversation
 
 # Web Interface
 web:

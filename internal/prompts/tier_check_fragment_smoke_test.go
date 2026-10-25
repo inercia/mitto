@@ -42,7 +42,7 @@ func TestTierCheckFragmentRenders(t *testing.T) {
 	// degraded-run `[phase: <phase>]` comment).
 	type consumer struct{ name, tier, phase string }
 	consumers := []consumer{
-		{"Feature — plan phase", "Reasoning", "plan"},
+		{"Feature — plan phase", "Smartest", "plan"},
 		{"Feature — implement phase", "Coding", "implement"},
 		{"Feature — test phase", "Coding", "test"},
 		{"Feature — review phase", "Reasoning", "review"},

@@ -1,12 +1,12 @@
 icon: list
-name: Show status
+name: Check status
 menus: beadsIssues, conversation
 parameters:
   - name: IssueID
     type: beadsId
     required: false
     description: The beads issue ID to act on
-description: Fact-check this bead's implementation status against the codebase
+description: Check progress, readiness, blockers, and resolution; optionally record the report or close resolved tickets after approval
 backgroundColor: '#F0F4C3'
 group: Tasks
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
@@ -17,7 +17,7 @@ target:
     issue: true
     coalesce: true
 prompt: |
-  # Beads: Status Check — One Bead
+  # Beads: Check Status
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
@@ -25,25 +25,29 @@ prompt: |
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header" (dict
       "Target"   $target
-      "NoTarget" "Fact-check the **current problem / topic under discussion here** against the codebase — what appears implemented vs. missing for the work being discussed. Do **not** run any `bd` commands — there is no bead to load."
+      "Role"     "Assess progress, readiness, blockers, and resolution against live evidence. Recommend the next action; only record a report or close eligible tickets with explicit approval."
+      "NoTarget" "Check the progress, readiness, blockers, and resolution of the **current problem / topic under discussion here** against the codebase. Distinguish agreed requirements from assumptions. Do **not** run any `bd` commands — there is no bead to load, create, or modify."
   ) }}
 
   {{ template "_shared/session-context" . }}
 
   {{ if $target -}}
-  ## Step 1 — Fetch full bead details
+  ## Step 1 — Load live context
 
   Load everything about the target bead:
 
-  {{ template "beads-issues/shared/load-context-min" $target }}
+  {{ template "beads-issues/shared/load-context" $target }}
 
-  If `bd show` reports the bead as **blocked or deferred** (`blocked` / `deferred` status, an
-  unresolved blocking dependency, a future `defer_until` / snooze timestamp, or a `needs-human`
-  label), also load the discussion — the blocker or deferral reason may be recorded there:
+  Read the current status, labels, metadata, dependencies, children, and discussion. Check comments
+  for the newest `[deferred: <ts>]` marker, decisions, and evidence. **Open and closed tickets**
+  are both in scope, across issue types. Treat status and phase labels as claims to verify, not proof.
+  If this is a support question, stop and use its support workflow instead.
 
-  ```bash
-  bd comments {{ $target }}         # look for the newest [deferred: <ts>] marker
-  ```
+  **Epic / child roll-up:** if the ticket is an epic or has children, load each child's full detail,
+  comments, dependencies, and children; recurse into nested epics. Assess each child's acceptance
+  criteria and evidence, including already-closed children, then roll up progress, readiness, and
+  resolution. An epic with no children is assessed as a single ticket. The epic's own acceptance
+  criteria still apply; child closure alone is not proof that those criteria are met.
 
   Also run locally to gather implementation evidence:
 
@@ -68,9 +72,25 @@ prompt: |
   the current implementation state against the work being discussed.
   {{- end }}
 
-  ## Step 2 — Fact-check implementation status
+  ## Step 2 — Assess readiness and actual progress
 
-  Analyse all gathered evidence and produce a **Status Report**:
+  Keep this a bounded status check, not an implementation or exhaustive review. Inspect relevant
+  code, callers, configuration, history, and tests. Identify the actual version being assessed
+  (commit / branch / worktree); do not attribute unrelated dirty work to this ticket. A matching
+  commit message or branch name alone does not prove completion. Run focused tests only when safe
+  and economical; report missing coverage, failures, and tests not run without claiming they passed.
+
+  Check **readiness**: is the goal clear, is scope unambiguous, are acceptance criteria testable,
+  are dependencies understood/satisfied, and could an implementer proceed without guessing? List
+  concrete missing decisions or evidence rather than inventing requirements or refining fields here.
+
+  Check **resolution** against every requirement: Still relevant / Partially resolved / Fully resolved /
+  Obsolete / Duplicate / Unknown. For bugs, check the defective path and regression evidence, not just
+  a claimed fix. For obsolete work, identify what superseded or removed the need. For a duplicate,
+  verify the canonical ticket and full scope overlap; partial overlap is not enough to close.
+  Ambiguous or incomplete evidence means **not eligible for closure**, even if labels say done.
+
+  Produce a concise **Status Report**:
 
   {{ if $target -}}
   ### Bead: `{{ $target }}` — `<Title>`
@@ -99,8 +119,8 @@ prompt: |
       "SessionID" .Session.ID
   ) }}
 
-  - **How to resume**: the exact command that clears the deferral, so the user can act
-    without looking it up:
+  - **How to resume**: explain the smallest safe path and its owner. If clearing deferral is
+    appropriate, show the command **as a recommendation only; do not execute it here**:
 
     ```bash
     bd update {{ $target }} --remove-label needs-human --defer ''
@@ -129,16 +149,74 @@ prompt: |
 
   #### Overall Assessment
 
-  - **Completion estimate**: `<percentage or qualitative: Not started / Early / Midway / Nearly done / Done>`
+  - **Progress**: Not started / Partial / Done / Unknown, with supporting evidence (no invented percentages).
+  - **Readiness**: Ready / Needs clarification / Blocked / Unknown; checklist of goal, scope, acceptance criteria, dependencies, and actionability.
+  - **Resolution verdict**: Still relevant / Partially resolved / Fully resolved / Obsolete / Duplicate / Unknown, with rationale.
   - **What appears to be done**: bullet list of concrete evidence of completed work
   - **What appears to be missing**: bullet list of acceptance criteria with no evidence of completion
   - **Blockers or risks**: anything preventing completion (e.g., a failing test, an unanswered question in notes). If the bead is blocked or deferred, lead with that and point back to the "Blocked or Deferred" section above.
 
+  - **Next recommended action**: one concrete step and owner. Recommend **Investigate** for missing
+    evidence or clarification, **Start work** when ready, or the appropriate **Review plan**,
+    **Review conclusions**, **Review implementation**, or **Review fix** for deeper scrutiny.
+    Recommend only; do not invoke those workflows or begin their work here.
+
   {{ if $target -}}
-  > ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Start work" prompt to continue implementation.
-  {{- else -}}
-  > ⚠️ **This report is read-only.** No code changes and no beads updates were performed.
+  For epics, include a per-child table (ID, title, live status, verdict, key evidence, blocker / next
+  action), followed by the epic roll-up and any remaining epic-level work. Distinguish already closed
+  children from merely resolved candidates. If closed tickets have remaining gaps, flag the mismatch;
+  do not silently reopen them or close them again.
+
+  ## Step 3 — Confirm simple actions
+
+  Everything above is **read-only until explicit approval**. Show exact target IDs, reasons, proposed
+  comment text, and any duplicate relationship before asking via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`:
+
+  - **Just the report** — no tracker writes; keeping a ticket open does not imply recording anything.
+  - **Record status report** — append only the approved Status Report comment, without editing fields.
+  - **Close resolved ticket** — offer only for an open ticket proven Fully resolved, Obsolete, or
+    Duplicate, with no untracked remaining acceptance work and no active work / driver / claim.
+    For duplicates, this approval must explicitly include linking to the verified canonical ticket.
+
+  For an epic, obtain **individual approval for each child closure**, with IDs, verdicts, and reasons;
+  never interpret approval for the parent as approval for its children. Obtain separate approval for
+  the epic itself, conditional on every child being closed and its own criteria being satisfied.
+  If interactive tools are unavailable, ask in the conversation and wait; **do not assume consent**.
+
+  ## Step 4 — Revalidate and apply only approved actions
+
+  **Before any write**, reload the affected bead and comments, dependencies, children, status, labels,
+  and claim metadata; recheck the relevant code/test evidence. If anything material changed, stop
+  and reassess; get fresh approval for a changed proposal. Respect `in-flight`, `claimed_by`,
+  `claim_heartbeat_at`, and any active work / driver / claim: **do not close actively owned tickets**,
+  including duplicates. Never force closure, bypass dependencies, or clear someone else's claim.
+
+  - **Record status report**: use `bd comment {{ $target }} "Status Report: <approved report and evidence>"`.
+    No edits to description, acceptance criteria, design, notes, status, priority, or labels.
+  - **Duplicate closure**: first run `bd dep relate {{ $target }} <canonical-id>` (or the approved child ID).
+    Verify the relationship succeeded or already exists before closing; if linking fails, do not close.
+  - **Approved closure**: use `bd close {{ $target }} --reason "<approved evidence-backed reason>"`
+    (substitute the individually approved child ID for child closures). Recheck each child immediately
+    before acting. **Close an epic only once all its children are closed**, after reloading the child
+    list and verifying its own acceptance criteria. If any child is open, unknown, or actively owned,
+    leave the epic open. Already-closed tickets need no closure and must not be reopened here.
+
+  Do not add an extra comment unless it too was approved. Report failed or partially completed actions
+  honestly; do not claim success, retry with force, or broaden approval. Finish by reporting the final
+  verdict, exact actions actually taken, and any remaining work.
+  {{- else }}
+  This is a **read-only report**: no code changes, tracker writes, ticket creation, or workflow starts.
+  Give the recommended next step and stop.
   {{- end }}
+
+  ## Boundaries
+
+  Do not implement code, edit repository files, run unsafe experiments, claim work, start a driver,
+  rewrite requirements or plans, decompose work, or create follow-up issues. Do not change labels,
+  priority, deferrals, or status except the explicitly approved eligible closures above. A user's
+  request for deeper work should be handed off to the appropriate prompt, not performed here.
+  Do not introduce a new workflow label. Stop after the status check and any approved simple actions.
 
   ## Final step — Offer to delete this conversation
 

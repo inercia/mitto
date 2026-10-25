@@ -49,7 +49,7 @@ func TestBeadsModeAndTaskUpstreamPromptMatrix(t *testing.T) {
 		{name: "JIRA: push issue", labels: []string{"jira-sync"}, wantUpstream: "prompts"},
 		{name: "JIRA: push to new", labels: []string{"support-question"}, wantUpstream: "prompts"},
 		{name: "GitHub: sync tasks", wantUpstream: "github"},
-		{name: "Show status"},
+		{name: "Check status"},
 		{name: "GitHub: review a Pull Request"},
 	}
 

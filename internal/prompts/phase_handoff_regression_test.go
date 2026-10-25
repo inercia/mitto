@@ -11,12 +11,16 @@ func TestBuiltinRoutersPreserveRestrictedRolesAndEvidenceHandoffs(t *testing.T) 
 		ctx.Session.IsChild = true
 		_, body := renderBuiltinPromptForWorkRegression(t, file, ctx)
 		normalized := strings.Join(strings.Fields(body), " ")
-		for _, contract := range []string{"target, permissions and stop condition", "Report the mismatch and stop"} {
+		contracts := []string{"target, permissions and stop condition", "Report the mismatch and stop"}
+		if file == "beads-issues/work.prompt.yaml" {
+			contracts = []string{"dedicated independent verifier keeps its phase's narrower target, permissions, and stop condition", "Start work is never its continuation"}
+		}
+		for _, contract := range contracts {
 			if !strings.Contains(strings.ToLower(normalized), strings.ToLower(contract)) {
 				t.Errorf("%s missing restricted-role boundary %q", file, contract)
 			}
 		}
-		if strings.Index(normalized, "target, permissions and stop condition") > strings.Index(normalized, "bd update") {
+		if strings.Index(strings.ToLower(normalized), "target, permissions and stop condition") > strings.Index(normalized, "bd update") {
 			t.Errorf("%s must check role before mutating ticket state", file)
 		}
 	}
@@ -39,6 +43,23 @@ func TestBuiltinRoutersPreserveRestrictedRolesAndEvidenceHandoffs(t *testing.T) 
 	}
 	if strings.Contains(body, `style: "success"`) {
 		t.Error("loop stop must not unconditionally report success")
+	}
+}
+
+func TestBuiltinStartWorkSeparatesVerifierAndFeatureReviewContinuations(t *testing.T) {
+	_, body := renderBuiltinPromptForWorkRegression(t, "beads-issues/work.prompt.yaml", linkedWorkRegressionContext())
+	normalized := strings.Join(strings.Fields(body), " ")
+	if strings.Contains(normalized, "if this conversation was assigned a verifier/reviewer role") {
+		t.Error("Start work must not stop its normal feature-review continuation")
+	}
+	for _, contract := range []string{
+		"dedicated independent verifier keeps its phase's narrower target, permissions, and stop condition",
+		"Start work is never its continuation",
+		"A normal feature review phase continues with Start work in this conversation",
+	} {
+		if !strings.Contains(normalized, contract) {
+			t.Errorf("Start work missing verifier/review continuation boundary %q", contract)
+		}
 	}
 }
 

@@ -6,8 +6,8 @@
 //
 // Usage from the repo root:
 //
-//	go run -tags renderdump ./internal/prompts/cmd/renderdump "Assess issue readiness" linked
-//	go run -tags renderdump ./internal/prompts/cmd/renderdump "Assess issue readiness"
+//	go run -tags renderdump ./internal/prompts/cmd/renderdump "Check status" linked
+//	go run -tags renderdump ./internal/prompts/cmd/renderdump "Check status"
 //
 // Only used interactively when verifying that a fragment refactor
 // preserves visible prompt output; NOT a shipped tool.

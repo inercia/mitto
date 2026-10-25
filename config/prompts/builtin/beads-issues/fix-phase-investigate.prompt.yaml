@@ -92,7 +92,7 @@ prompt: |
   ### Step 3.1 — Record the investigation on the bead
 
   The comment body is an **Investigation Report** in the shared shape used by the
-  "Investigate more" prompt, so the later fix phase (possibly a different agent) can
+  "Investigate" prompt, so the later fix phase (possibly a different agent) can
   implement without further design work:
 
   {{ template "beads-issues/shared/investigate-report" (dict "Target" $target) }}

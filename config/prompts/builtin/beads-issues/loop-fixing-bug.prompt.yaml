@@ -188,7 +188,7 @@ prompt: |
   - `fixed` present → **Step 3d: Done (handled inline).** ← early-exit; check first.
   - `reproduced` present, `fixed` absent → **Step 3c: dispatch Fix.**
   - `researched` present, `reproduced` absent → **Step 3b: dispatch Reproduce.**
-  - `implementation-refined` present (by "Investigate more"), `researched` absent → **Step 3a** (the Investigate phase only adds `researched` — it does not re-investigate), then Reproduce.
+  - `implementation-refined` present (by "Investigate"), `researched` absent → **Step 3a** (the Investigate phase only adds `researched` — it does not re-investigate), then Reproduce.
   - None of `researched`, `reproduced`, `fixed` present → **Step 3a: dispatch Investigate.**
 
   If the driver itself is unable to load state or resolve the target autonomously, go

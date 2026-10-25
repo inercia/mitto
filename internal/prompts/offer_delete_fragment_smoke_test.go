@@ -57,14 +57,12 @@ func TestOfferDeleteConversationFragmentRenders(t *testing.T) {
 		"Reevaluate all issues",
 		"Status ALL in-progress",
 		"Start working on ready",
-		// beads-issues/ folder (8).
-		"Assess issue readiness",
+		// beads-issues/ folder (6).
 		"Decompose issue",
-		"Recalculate issue dependencies",
+		"Review dependencies",
 		"Discuss a topic",
-		"Investigate more",
-		"Check if issue resolved",
-		"Show status",
+		"Investigate",
+		"Check status",
 		"Start work",
 	}
 

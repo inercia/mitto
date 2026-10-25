@@ -46,7 +46,7 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
   - name: "Start work"
     prompt: "y"
     enabledWhen: 'Item.Status != "closed"'
-  - name: "Show status"
+  - name: "Check status"
     prompt: "z"
 `
 
@@ -133,7 +133,7 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	if !has(open, "Start work") {
 		t.Errorf("item-gated prompt missing for open issue; got %v", open)
 	}
-	if !has(open, "Show status") {
+	if !has(open, "Check status") {
 		t.Errorf("ungated prompt missing; got %v", open)
 	}
 
@@ -143,7 +143,7 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	if has(closed, "Start work") {
 		t.Errorf("item-gated prompt should be hidden for closed issue; got %v", closed)
 	}
-	if !has(closed, "Decompose issue") || !has(closed, "Show status") {
+	if !has(closed, "Decompose issue") || !has(closed, "Check status") {
 		t.Errorf("dir-gated/ungated prompts must remain for closed issue; got %v", closed)
 	}
 
@@ -153,7 +153,7 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	if has(nb, "Decompose issue") {
 		t.Errorf("dir gate is fail-open: dir-gated prompt returned for a dir without .beads; got %v", nb)
 	}
-	if !has(nb, "Show status") {
+	if !has(nb, "Check status") {
 		t.Errorf("ungated prompt missing for no-beads dir; got %v", nb)
 	}
 }

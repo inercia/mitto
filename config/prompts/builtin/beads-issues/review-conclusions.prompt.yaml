@@ -1,0 +1,120 @@
+icon: search
+name: Review conclusions
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The investigated, unfixed bug bead whose conclusions should be reviewed
+description: 'Review all investigation and reproduction evidence for an unfixed bug, challenge conclusions and proposed fixes, and propose a fix direction when missing without implementing it'
+backgroundColor: '#B3E5FC'
+group: Tasks
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Type == "bug" && Item.Status != "closed" && Item.Labels != null && ("implementation-refined" in Item.Labels || "researched" in Item.Labels || "reproduced" in Item.Labels) && !("fixed" in Item.Labels) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Smartest
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Review Bug Investigation Conclusions
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "bug conclusions to review"
+      "FromLink" (ne .Session.BeadsIssue "")
+  ) }}
+
+  {{ if $target -}}
+  This is a **conclusions-only review**, not implementation. Assess the investigations
+  together as a whole, not just the latest comment or each report in isolation.
+  Preserve sound findings and approved scope; do not invent extra work.
+
+  ## Step 1 — Load all investigations and LIVE state
+
+  {{ template "beads-issues/shared/load-context" $target }}
+
+  Verify the live bead is a non-closed **bug**, has `implementation-refined`, `researched`,
+  or `reproduced`, and has neither `fixed` nor `support-question`. If it is ineligible,
+  stop without changing it. If it is `in-flight` or has an active driver/claim, stop
+  rather than race the bug-fix workflow. Reproduction is useful evidence, not a prerequisite.
+
+  Read all Investigation Reports, comments, reproduction attempts and results, logs,
+  proposed fixes, design and acceptance criteria, relevant parent/dependency/child beads,
+  and later user clarifications. Follow referenced investigation artifacts where available.
+  Build a chronological evidence map: which conclusions are current, superseded,
+  contradictory, or still unsupported? Do not treat the latest agent opinion as authority.
+  If no investigation can be found, stop and suggest **Investigate** instead.
+
+  ## Step 2 — Challenge the conclusions and fix direction
+
+  - Separate observed facts, reproducible results, hypotheses, assumptions, and authoritative
+    user requirements. State confidence and missing evidence; labels alone are not proof.
+  - Reconcile agreements and contradictions across all investigations. Check whether the
+    proposed root cause explains every reported symptom and reproduction result, including
+    failed reproductions, environment differences, timing, and counterexamples. Consider
+    plausible alternative causes; do not turn correlation into causation.
+  - Open the referenced code, callers, interfaces, tests, and available logs. Verify that
+    paths and symbols still exist and the claimed causal mechanism matches the live code.
+    Cite concrete evidence; distinguish checks actually run from checks merely proposed.
+    Do not edit files or perform destructive/externally mutating reproduction experiments.
+  - Assess every proposed fix against the supported root cause and required behavior.
+    Does it address the cause rather than mask symptoms? Are competing proposals compatible,
+    redundant, or contradictory? Prefer the narrowest correct fix at the responsible layer,
+    reusing existing mechanisms and preserving unrelated behavior.
+  - If no fix has been proposed, propose an actionable fix direction. If existing proposals
+    are unsound, propose a corrected direction. If evidence is insufficient to choose safely,
+    give conditional alternatives and the smallest discriminating checks, not an invented
+    definitive fix. Do not mistake a missing fix proposal for a missing investigation.
+  - Check relevant validation, authorization, compatibility, error handling, concurrency,
+    data safety, migration/rollback, dependencies, and likely regressions. Specify a regression
+    test that fails for the reported bug and passes with the proposed fix, plus nearby checks.
+
+  ## Step 3 — Present the Conclusions Review
+
+  Produce a concise **Conclusions Review [tier: Smartest]**:
+
+  - **Verdict**: conclusions supported, partially supported, or unsupported; separately state
+    whether the fix direction is ready, needs correction, or is blocked by missing evidence.
+  - **Evidence synthesis**: symptom → evidence → root-cause conclusion, confidence, conflicts,
+    and reproduction status (confirmed, failed, or not attempted). Never claim reproduction
+    merely because a label or prior report says so; attribute unverified prior results.
+  - **Findings**: severity, evidence (paths/symbols/logs), impact, and specific correction.
+    Explicitly say when no defects were found; do not manufacture findings or rewrite sound work.
+  - **Fix direction**: what to keep, reject, correct, or newly propose and why; actionable steps,
+    code not to touch, and regression proof. Show the actual proposed edits to existing conclusions.
+  - **Open questions**: unresolved decisions and targeted evidence needed before implementation.
+
+  If conclusions or fix instructions need changes, provide a self-contained corrected
+  Investigation Report so the next agent need not reconcile conflicting comments:
+
+  {{ template "beads-issues/shared/investigate-report" (dict "Target" $target) }}
+
+  Preserve provenance and uncertainty in that report; do not erase historical evidence or
+  silently promote a hypothesis to fact. Proposed sub-issues remain proposals, not tracker changes.
+
+  ## Step 4 — Confirm before writing
+
+  {{ template "beads-issues/shared/review-confirm" (dict
+      "SessionID" .Session.ID "Target" $target "Title" "Conclusions Review"
+      "CorrectionOption" "Apply the conclusion corrections" "CodeReview" false
+  ) }}
+
+  For **Apply the conclusion corrections**, apply only approved edits to fields holding
+  the current conclusions or fix plan, preserving unrelated content and historical reports.
+  Keep the canonical report
+  self-contained and consistent; record the approved Conclusions Review as a `bd comment`
+  and append an audit note describing field changes and which findings it supersedes and why.
+
+  ## Boundaries and final summary
+
+  {{ template "beads-issues/shared/review-boundaries" . }}
+  - Distinguish a reviewed hypothesis or fix plan from reproduced behavior and verified software:
+    no fix has been implemented by this review.
+  - Summarize the verdict, corrections actually persisted (if any), remaining uncertainties,
+    and whether the fix direction is ready for implementation. Stop after the review.
+  {{- end }}

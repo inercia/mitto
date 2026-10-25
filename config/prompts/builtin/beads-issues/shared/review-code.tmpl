@@ -1,0 +1,97 @@
+{{/* Shared critical post-code review; neither mutates code nor advances a workflow. */}}
+{{- $fix := eq .Kind "fix" -}}
+{{- $title := "Implementation Review" -}}
+{{- if $fix }}{{ $title = "Fix Review" }}{{ end -}}
+This is a **code review only**, not permission to implement corrections. Be critical,
+not a rubber stamp: labels, prior agent claims, and green tests alone do not prove correctness.
+
+## Step 1 — Load LIVE state and identify the code under review
+
+{{ template "beads-issues/shared/load-context" .Target }}
+
+{{ if $fix -}}
+Verify the live bead is a **bug** with `fixed` and without `support-question`.
+{{ else -}}
+Verify the live bead is a **feature** with at least one of `implemented`, `tested`, or
+`verified`, and without `support-question`.
+{{ end -}}
+Both open and closed tickets are eligible; closure is not evidence of correctness.
+If ineligible, stop without changes. If it is `in-flight` or has an active driver/claim,
+stop rather than race ongoing work. Do not reopen a closed ticket.
+
+Read the requirements, acceptance criteria, all relevant investigations, approved plans,
+implementation/fix reports, testing reports, comments, parent/child/dependency context,
+and later user clarifications. Separate authoritative requirements from agent assumptions.
+Do not weaken requirements or invent obligations from inferred release/deployment gates.
+
+Locate the actual changes from bead references to commits, PRs, branches, worktrees, or
+uncommitted work. Inspect repository status, the relevant diff and base, then open the full
+changed functions, callers, interfaces, and tests. Trace the actual end-to-end behavior.
+Distinguish the submitted version from later changes and unrelated dirty work; do not
+attribute the whole working tree or latest commit to this ticket. If the change set or
+version cannot be identified reliably, report that blocker and ask for the missing reference
+instead of guessing. Do not switch branches, reset, stash, commit, push, or overwrite work.
+
+## Step 2 — Critically assess correctness and requirement coverage
+
+- Map **each requirement and acceptance criterion** to concrete code paths and verification
+  evidence. Mark complete, partial, missing, or contradicted behavior. Check the implementation,
+  not merely whether it follows the plan: a flawed plan is not justification for flawed code.
+{{ if $fix -}}
+- Reconcile all investigation and reproduction evidence with the attempted fix. Does the
+  changed code address the supported root cause, or only mask the symptom? Check every
+  reported symptom, reproduction precondition, counterexample, and relevant environment.
+  Challenge the diagnosis if the code contradicts it. A `fixed` label is not proof of a fix.
+- Inspect the regression test: would it fail on the pre-fix behavior and pass with the fix
+  for the right reason? Check it exercises the actual failing path, not a mock or assertion
+  that bypasses the defect. Distinguish observed reproduction from prior unverified claims.
+{{ else -}}
+- Check the feature's user-visible behavior end to end, including integration, configuration,
+  callers, persistence, and UI where relevant. Look for unconnected code, missing requirements,
+  accidental scope changes, and tests that validate implementation details rather than behavior.
+{{ end -}}
+- Look for concrete logic errors, edge cases, incorrect invariants, error handling gaps,
+  concurrency/lifecycle bugs, authorization and trust-boundary failures, data loss, compatibility
+  and migration/rollback risks, and material performance regressions. Check downstream callers
+  and surrounding behavior. Keep the review scoped; avoid speculative refactors and style churn.
+- Assess architecture and maintainability where they affect correctness or lifecycle cost:
+  ownership at the responsible layer, reuse of fitting existing mechanisms, unnecessary
+  complexity, duplicated logic, and misleading documentation.
+- Run the smallest sufficient safe checks using existing tests/build/lint commands when
+  available. Do not edit repository files, add tests, run auto-fix tools, or perform destructive
+  or externally mutating experiments. If a check requires writes beyond disposable build/test
+  artifacts or unsafe side effects, propose it instead. Record exact commands, results, skipped
+  checks and reasons; never imply a proposed check was run or a passing suite proves all behavior.
+
+## Step 3 — Present the review and actionable solutions
+
+Produce a concise **{{ $title }} [tier: Smartest]**:
+
+- **Scope**: reviewed version/base, files and relevant paths; limitations or attribution gaps.
+- **Verdict**: correct for the reviewed scope, changes required, or inconclusive; no blanket
+  approval when requirements, code, or necessary evidence remain unavailable.
+- **Requirements coverage**: requirement → code path → test/evidence, with explicit gaps.
+- **Findings**, ordered by severity: exact file/line or symbol, triggering scenario, evidence,
+  impact, and why it violates required behavior. Separate confirmed defects from hypotheses.
+- **Proposed solutions** for each finding: the narrowest sound correction at the responsible
+  layer, why it solves the problem, affected paths, compatibility/safety considerations, and
+  a regression test or check that proves it. Show suggested code snippets/diffs in the report
+  when useful, but do not apply them. Explain material alternatives and recommend one.
+- **Verification**: commands actually run and outcomes, prior claims not independently checked,
+  remaining risks, and the smallest next checks needed.
+
+Explicitly say when no defects were found; do not manufacture findings or imply correctness
+beyond the evidence. Preserve sound work. Proposed fixes and follow-up issues remain proposals.
+
+## Step 4 — Confirm before recording
+
+{{ template "beads-issues/shared/review-confirm" (dict
+    "SessionID" .Ctx.Session.ID "Target" .Target "Title" $title
+    "CorrectionOption" "" "CodeReview" true
+) }}
+
+## Boundaries and final summary
+
+{{ template "beads-issues/shared/review-boundaries" . }}
+- Summarize the verdict, material findings, proposed solutions, verification limits, and
+  whether the review was recorded. No corrections have been applied. Stop after the review.

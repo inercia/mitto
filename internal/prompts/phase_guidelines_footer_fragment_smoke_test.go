@@ -43,7 +43,7 @@ func TestPhaseGuidelinesFooterFragmentRenders(t *testing.T) {
 		includeItemNote          bool
 	}
 	consumers := []consumer{
-		{"Feature — plan phase", "Plan", "Reasoning", "plan", true},
+		{"Feature — plan phase", "Plan", "Smartest", "plan", true},
 		{"Feature — implement phase", "Implementation", "Coding", "summary", false},
 		{"Feature — test phase", "Testing", "Coding", "summary", false},
 		{"Feature — review phase", "Review", "Reasoning", "summary", false},

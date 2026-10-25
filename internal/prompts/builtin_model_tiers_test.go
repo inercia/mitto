@@ -88,7 +88,7 @@ func TestBuiltinInvestigatePromptUsesSmartAndImplementationReadyReport(t *testin
 		}
 	}
 	// Every implementing flow shares the work + closure fragments.
-	for _, f := range []string{"beads-issues/fix-phase-fix.prompt.yaml", "beads-issues/feature-phase-implement.prompt.yaml", "beads-issues/implement.prompt.yaml"} {
+	for _, f := range []string{"beads-issues/fix-phase-fix.prompt.yaml", "beads-issues/feature-phase-implement.prompt.yaml"} {
 		b, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", f))
 		if err != nil {
 			t.Fatal(err)
@@ -98,13 +98,6 @@ func TestBuiltinInvestigatePromptUsesSmartAndImplementationReadyReport(t *testin
 				t.Errorf("%s does not use %q", f, frag)
 			}
 		}
-	}
-	impl, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", "beads-issues/implement.prompt.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(impl), "modelTag: Coding") || !strings.Contains(string(impl), "shared/scope-resolution") {
-		t.Error("Implement prompt must prefer Coding and use scope-resolution")
 	}
 	// Entry points that accept an epic share the epic/standalone resolution.
 	for _, f := range []string{"beads-issues/investigate.prompt.yaml", "beads-issues/loop-until-complete.prompt.yaml"} {

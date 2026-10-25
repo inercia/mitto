@@ -103,7 +103,7 @@ prompt: |
   - Lots of ready work → **"Start working on ready"** (or per-bead **"Start work"**).
   - Stale / obsolete / duplicate beads → **"Beads: cleanup stale issues"**.
   - Priorities or dependencies look off → **"Beads: reevaluate all issues"**.
-  - A specific bead is vague or under-specified → per-bead **"Investigate more"**.
+  - A specific bead is vague or under-specified → per-bead **"Investigate"**.
   - Dependency cycle or wrong blockers → per-bead **"Update dependencies"**.
 
   End with a one-line bottom line: is the board healthy, and what is the single most useful next step?

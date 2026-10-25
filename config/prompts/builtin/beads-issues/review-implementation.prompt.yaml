@@ -1,0 +1,32 @@
+icon: search
+name: Review implementation
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The implemented feature bead to review
+description: 'Critically review feature code against requirements, assess correctness and regressions, and propose corrections without implementing them'
+backgroundColor: '#B3E5FC'
+group: Tasks
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Type == "feature" && Item.Labels != null && ("implemented" in Item.Labels || "tested" in Item.Labels || "verified" in Item.Labels) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Smartest
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Review Implementation
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target" $target "Noun" "feature implementation to review"
+      "FromLink" (ne .Session.BeadsIssue "")
+  ) }}
+  {{ if $target -}}
+  {{ template "beads-issues/shared/review-code" (dict "Ctx" . "Target" $target "Kind" "implementation") }}
+  {{- end }}

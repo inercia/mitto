@@ -70,7 +70,7 @@ prompt: |
   review work inline. It loads the bead's live labels, then **dispatches** the matching
   phase prompt by name via `mitto_conversation_send_prompt` (a self-send). Each phase
   prompt declares its own `preferredModels` so the ACP session transiently switches to
-  the right tier for that stage (Reasoning for plan and review, Coding for implement and
+  the right tier for that stage (Smartest for plan, Reasoning for review, Coding for implement and
   test) without touching this conversation's baseline model. The phase adds its label
   and ends; the driver's `onCompletion` schedule then re-runs this prompt, which
   observes the newly-advanced label and dispatches the next phase.
@@ -189,7 +189,7 @@ prompt: |
   - `tested` present, `verified` absent → **Step 3d: dispatch Review/Verify.**
   - `implemented` present, `tested` absent → **Step 3c: dispatch Test.**
   - `planned` present, `implemented` absent → **Step 3b: dispatch Implement.**
-  - `implementation-refined` present (by "Investigate more"), `planned` absent → **Step 3a** (the Plan phase only adds `planned` — it does not re-plan), then Implement.
+  - `implementation-refined` present (by "Investigate"), `planned` absent → **Step 3a** (the Plan phase only adds `planned` — it does not re-plan), then Implement.
   - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: dispatch Plan/Design.**
 
   If the driver itself is unable to load state or resolve the target autonomously, go
@@ -207,7 +207,7 @@ prompt: |
   )
   ```
 
-  Then end this turn. The Plan phase runs on the **Reasoning** tier, records a `Plan:`
+  Then end this turn. The Plan phase runs on the **Smartest** tier, records a `Plan:`
   comment (decomposing into sub-issues first if the work is large), adds the `planned`
   label, and stops. The next scheduled run of this driver will observe `planned` and
   dispatch Implement.

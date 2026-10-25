@@ -1,7 +1,7 @@
 icon: search
 name: Investigate ALL more
 menus: prompts, beadsList
-description: 'Run the same deep investigation as the "Investigate more" prompt, but across every open bead that has not been investigated yet: gather context, close the gaps, enrich each bead into an implementation-ready spec, label it, and defer the ones that cannot be settled without a human.'
+description: 'Run the same deep investigation as the "Investigate" prompt, but across every open bead that has not been investigated yet: gather context, close the gaps, enrich each bead into an implementation-ready spec, label it, and defer the ones that cannot be settled without a human.'
 backgroundColor: '#C5CAE9'
 group: Tasks
 target:
@@ -30,7 +30,7 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  This is the **bulk counterpart of the "Investigate more" prompt**: the same investigation, applied
+  This is the **bulk counterpart of the "Investigate" prompt**: the same investigation, applied
   to **every open bead that has not been investigated yet** instead of a single target. For each
   bead, your job is to **deepen the understanding** of it — gather the context it is missing, clarify
   anything vague or underspecified, and enrich it so it is genuinely ready to work on. You are

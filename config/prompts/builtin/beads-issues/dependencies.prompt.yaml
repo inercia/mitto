@@ -1,5 +1,5 @@
 icon: sync
-name: Recalculate issue dependencies
+name: Review dependencies
 menus: beadsIssues
 parameters:
   - name: IssueID

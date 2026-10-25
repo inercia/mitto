@@ -175,7 +175,7 @@ func TestLoadBeadContextFragmentRenders(t *testing.T) {
 	}
 	funcs := cel.BuildTemplateFuncMap(ctx)
 
-	consumers := []string{"Assess issue readiness", "Discuss a topic", "Investigate more"}
+	consumers := []string{"Check status", "Discuss a topic", "Investigate"}
 	// Hallmark substrings that appear (with the target substituted) in the
 	// rendered output whenever the fragment inlines successfully.
 	hallmarks := []string{
@@ -286,28 +286,6 @@ func TestLoadBeadContextMinFragmentRenders(t *testing.T) {
 		}
 	}
 
-	// Caller that substitutes `$target` from Session.BeadsIssue.
-	targetCtx := &cel.PromptEnabledContext{
-		Session: cel.SessionContext{ID: "s", Name: "N", HasMessages: true, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
-		Args:    map[string]string{"IssueID": "mitto-abc"},
-	}
-	targetFuncs := cel.BuildTemplateFuncMap(targetCtx)
-	body, ok := byName["Show status"]
-	if !ok {
-		t.Fatalf("prompt \"Show status\" not found in builtin corpus")
-	}
-	out, err := RenderPromptTemplate("Show status", body, targetCtx, targetFuncs)
-	if err != nil {
-		t.Fatalf("render \"Show status\": %v", err)
-	}
-	for _, hallmark := range []string{
-		"bd show mitto-abc --long --json",
-		"bd dep tree mitto-abc",
-	} {
-		if !strings.Contains(out, hallmark) {
-			t.Errorf("prompt \"Show status\": missing hallmark %q — load-context-min did not substitute $target", hallmark)
-		}
-	}
 }
 
 // TestTargetBeadHeaderFragmentRenders is a smoke test for the flexible
@@ -344,11 +322,9 @@ func TestTargetBeadHeaderFragmentRenders(t *testing.T) {
 	// "There is **no linked bead** for this conversation. <NoTarget>" when
 	// none is resolvable.
 	consumers := []string{
-		"Assess issue readiness",
 		"Discuss a topic",
-		"Investigate more",
-		"Check if issue resolved",
-		"Show status",
+		"Investigate",
+		"Check status",
 		"Start work",
 	}
 

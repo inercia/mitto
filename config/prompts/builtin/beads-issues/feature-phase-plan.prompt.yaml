@@ -11,11 +11,11 @@ parameters:
     required: false
     multiLine: true
     description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
-description: Internal phase-tier prompt — plan a feature and add the `planned` label. Invoked by name from the feature-implementation driver; runs on the Reasoning tier.
+description: Internal phase-tier prompt — plan a feature and add the `planned` label. Invoked by name from the feature-implementation driver; runs on the Smartest tier.
 group: Tasks
 backgroundColor: '#B3E5FC'
 preferredModels:
-  - modelTag: Reasoning
+  - modelTag: Smartest
 target:
   reuse:
     issue: true
@@ -44,9 +44,9 @@ prompt: |
 
   {{ template "beads-issues/shared/tier-check" (dict
       "Target"    $target
-      "Tier"      "Reasoning"
+      "Tier"      "Smartest"
       "Phase"     "plan"
-      "Confirmed" (Model "Reasoning")
+      "Confirmed" (Model "Smartest")
       "ModelName" .Session.ModelName
       "ModelTags" .Session.ModelTags
   ) }}
@@ -103,7 +103,7 @@ prompt: |
   bead and advance the state:
 
   ```bash
-  bd comment {{ $target }} "Plan [tier: Reasoning]: <the Investigation Report above: approach, problem decomposition, implementation instructions, code not to touch, any sub-issues created>."
+  bd comment {{ $target }} "Plan [tier: Smartest]: <the Investigation Report above: approach, problem decomposition, implementation instructions, code not to touch, any sub-issues created>."
   bd update {{ $target }} --add-label planned
   bd update {{ $target }} --add-label implementation-refined   # only if the plan is implementation-ready
   ```
@@ -135,5 +135,5 @@ prompt: |
       "IncludeItemNote" true
       "TagNoun"         "plan"
       "TagPrefix"       "Plan"
-      "Tier"            "Reasoning"
+      "Tier"            "Smartest"
   ) }}

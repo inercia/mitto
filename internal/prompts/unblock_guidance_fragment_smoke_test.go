@@ -13,7 +13,7 @@ func TestUnblockGuidanceFragmentRendersInInteractiveConsumers(t *testing.T) {
 	consumers := map[string]string{
 		"Explain":               "../../config/prompts/builtin/beads-issues/explain.prompt.yaml",
 		"Start work":            "../../config/prompts/builtin/beads-issues/work.prompt.yaml",
-		"Show status":           "../../config/prompts/builtin/beads-issues/status.prompt.yaml",
+		"Check status":          "../../config/prompts/builtin/beads-issues/status.prompt.yaml",
 		"Reevaluate all issues": "../../config/prompts/builtin/beads/reevaluate.prompt.yaml",
 	}
 
@@ -53,8 +53,8 @@ func TestUnblockGuidanceFragmentRendersInInteractiveConsumers(t *testing.T) {
 					t.Errorf("%s rendered output missing unblock hallmark %q", name, hallmark)
 				}
 			}
-			if name == "Show status" && !strings.Contains(out, "bd comments mitto-blocked") {
-				t.Error("Show status must load comments for blocked as well as deferred beads")
+			if name == "Check status" && !strings.Contains(out, "bd comments mitto-blocked") {
+				t.Error("Check status must load comments for blocked as well as deferred beads")
 			}
 		})
 	}

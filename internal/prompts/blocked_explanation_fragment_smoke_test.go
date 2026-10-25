@@ -11,7 +11,7 @@ func TestBlockedExplanationFragmentRendersAcrossBlockedIssuePaths(t *testing.T) 
 	consumers := []string{
 		"Explain",
 		"Start work",
-		"Show status",
+		"Check status",
 		"Reevaluate all issues",
 		"Bug fix — reproduce phase",
 		"Loop fixing bug",
@@ -22,8 +22,7 @@ func TestBlockedExplanationFragmentRendersAcrossBlockedIssuePaths(t *testing.T) 
 		"Overview",
 		"Status ALL in-progress",
 		"Status ONE in-progress",
-		"Recalculate issue dependencies",
-		"Assess issue readiness",
+		"Review dependencies",
 		"Start working on ready",
 	}
 	ctx := &cel.PromptEnabledContext{

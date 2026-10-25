@@ -1,12 +1,12 @@
 icon: search
-name: Investigate more
+name: Investigate
 menus: beadsIssues, conversation
 parameters:
   - name: IssueID
     type: beadsId
     required: false
     description: The beads issue ID to act on
-description: 'Deep-dive a bead: gather context, clarify unclear details, enrich it, and split off sub-issues if complex'
+description: 'Gather missing evidence, clarify requirements, and prepare the ticket for implementation'
 backgroundColor: '#B3E5FC'
 group: Tasks
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'

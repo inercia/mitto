@@ -1,0 +1,25 @@
+{{/* Shared review approval/recording flow. CorrectionOption is empty for comment-only
+     code reviews. Field-correction instructions remain with the owning prompt. */}}
+This is **read-only until the user approves tracker changes**. Present the review and
+any proposed edits, then ask via `mitto_ui_options(self_id: "{{ .SessionID }}",
+allow_free_text: true)` with {{ if .CorrectionOption }}**{{ .CorrectionOption }}**, {{ end }}**Record review only**
+and **Just the report** (no changes).
+{{ if .CorrectionOption -}}
+Offer corrections only when there are actual edits. Resolve material questions before applying edits.
+{{ end -}}
+If interactive tools are unavailable, leave the report in the conversation and wait for
+explicit approval; do not assume consent.
+
+{{ if .CodeReview -}}
+Before an approved write, reload the bead, comments, and reviewed code state. If eligibility,
+requirements, or code changed, stop and re-review rather than record a stale verdict.
+{{ else -}}
+Before any approved write, reload the bead and comments. If eligibility or the reviewed
+plan, investigations, or proposed fixes have changed, stop and re-review rather than
+overwrite concurrent work.
+{{ end -}}
+For **Record review only**, post only the approved {{ .Title }} as a `bd comment` on
+{{ .Target }}{{ if .CodeReview }} including the reviewed version and proposed corrections{{ end }}.
+Do not edit existing fields or historical reports for this choice.
+For **Just the report**, do not run any mutating `bd` commands.
+Report failed writes; do not claim they succeeded.

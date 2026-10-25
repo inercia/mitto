@@ -1,0 +1,107 @@
+icon: search
+name: Review plan
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The investigated feature bead whose plan should be reviewed
+description: 'Review an investigated feature implementation plan against requirements and live code, and propose corrections or missing details without implementing it'
+backgroundColor: '#B3E5FC'
+group: Tasks
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Type == "feature" && Item.Status != "closed" && Item.Labels != null && ("implementation-refined" in Item.Labels || "planned" in Item.Labels) && !("implemented" in Item.Labels || "tested" in Item.Labels || "verified" in Item.Labels) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Smartest
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Review an Existing Feature Plan
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "feature plan to review"
+      "FromLink" (ne .Session.BeadsIssue "")
+  ) }}
+
+  {{ if $target -}}
+  This is a **plan-only review**, not implementation or a review of implemented code.
+  Improve the existing plan only where evidence shows a defect or missing detail; do not
+  restart investigation from scratch or invent extra scope.
+
+  ## Step 1 — Load the existing plan and LIVE state
+
+  {{ template "beads-issues/shared/load-context" $target }}
+
+  Verify the live bead is a non-closed **feature**, has `implementation-refined` or `planned`,
+  and has none of `implemented`, `tested`, `verified`, or `support-question`. If it is
+  ineligible, stop and explain why without changing it. If it is `in-flight` or has an
+  active driver/claim, stop rather than race the implementation workflow.
+
+  Read the latest Investigation Report, implementation plan, design, acceptance criteria,
+  comments, parent requirements, dependencies, and later user clarifications. Identify
+  which plan is current. If no existing plan can be found, stop and suggest **Investigate**
+  instead of writing a new plan under the guise of review.
+
+  ## Step 2 — Check correctness and requirements coverage
+
+  - Separate authoritative user requirements from agent assumptions and proposals.
+    Later authoritative clarifications override stale plans; do not weaken requirements
+    or turn inferred release, publication, deployment, or adoption gates into obligations.
+  - Map **each requirement and acceptance criterion** to the plan step that satisfies it
+    and the test/check that proves it. Mark omissions and contradictions explicitly.
+  - Open the referenced code, interfaces, callers, and tests. Check that paths and symbols
+    still exist, the proposed behavior is technically correct, and existing helpers and
+    architectural patterns are reused where appropriate. Cite concrete evidence.
+  - Check dependency order, work-unit boundaries, compatibility, authorization, validation,
+    error handling, concurrency, data safety, migrations/rollback, and edge cases where
+    relevant. Verify the proposed tests cover the requirements and likely regressions.
+  - Ensure implementation instructions are actionable, the code-not-to-touch exclusions
+    remain compatible with the plan, and no unresolved design decision is hidden as a fact.
+    Preserve sound parts; add detail only where it is needed to implement or verify safely.
+
+  ## Step 3 — Present the Plan Review
+
+  Produce a concise **Plan Review [tier: Smartest]**:
+
+  - **Verdict**: ready as written, ready with the proposed corrections, or blocked.
+  - **Requirements coverage**: requirement → plan step → verification, including gaps.
+  - **Findings**: severity, evidence (paths/symbols), impact, and specific correction.
+    Explicitly say when no defects were found; do not invent findings.
+  - **Proposed changes**: what to keep, correct, or clarify and why; show the actual edits.
+  - **Open questions**: unresolved requirements or decisions requiring user input. Never
+    claim implementation readiness while these remain unresolved.
+
+  If changes are needed, provide an updated, self-contained plan using the existing
+  Investigation Report structure (not just a list of comments an implementer must reconcile):
+
+  {{ template "beads-issues/shared/investigate-report" (dict "Target" $target) }}
+
+  Preserve approved scope, dependencies, and exclusions. Proposed new requirements or
+  sub-issues remain proposals, not tracker changes. If the plan is already correct and
+  complete, say so and do not rewrite it just to make changes.
+
+  ## Step 4 — Confirm before writing
+
+  {{ template "beads-issues/shared/review-confirm" (dict
+      "SessionID" .Session.ID "Target" $target "Title" "Plan Review"
+      "CorrectionOption" "Apply the plan corrections" "CodeReview" false
+  ) }}
+
+  For **Apply the plan corrections**, apply only the approved edits to the fields holding
+  the existing plan, keeping its canonical version self-contained and consistent;
+  preserve unrelated content. Record the approved
+  Plan Review as a `bd comment` and append an audit note describing any field changes and why.
+
+  ## Boundaries and final summary
+
+  {{ template "beads-issues/shared/review-boundaries" . }}
+  - Distinguish a corrected plan from verified software: no implementation has been performed.
+  - Summarize the verdict, corrections actually persisted (if any), remaining questions, and
+    whether the plan is ready for implementation. Stop after the review.
+  {{- end }}
