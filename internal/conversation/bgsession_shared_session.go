@@ -262,21 +262,14 @@ func (bs *BackgroundSession) hsApplySessionModes(modes *agentbackend.ModeState) 
 }
 func (bs *BackgroundSession) hsApplyAgentModels(models *SessionModelState) {
 	bs.recordRawAgentCatalog(models)
+	// Retain the unfiltered catalog so a hidden-model policy change can be
+	// re-applied to this live session by RefilterModelPolicy (no new RPC).
+	bs.retainRawModelState(models)
 	policy, err := bs.hiddenModelPolicy()
 	if err != nil {
 		policy = hideAllModelsPolicy()
 	}
-	if models == nil {
-		bs.setAgentModels(nil)
-		return
-	}
-	filtered := filterModelInfos(policy, models.AvailableModels)
-	view := *models
-	view.AvailableModels = filtered
-	if view.AvailableModels == nil {
-		view.AvailableModels = []ModelInfo{}
-	}
-	bs.setAgentModels(&view)
+	bs.setAgentModels(filterModelState(policy, models))
 }
 func (bs *BackgroundSession) hsApplySynthesizedModelsIfEmpty() {
 	bs.applySynthesizedModelsIfEmpty()
@@ -464,4 +457,16 @@ func filterModelInfos(policy *config.HiddenModelPolicy, in []ModelInfo) []ModelI
 		out = []ModelInfo{}
 	}
 	return out
+}
+
+// filterModelState applies the hidden-model policy to an already-derived model
+// state. CurrentModelId is left truthful (it may reference a hidden model) and
+// no profile synthesis happens here: this is a re-filter of a real catalog.
+func filterModelState(policy *config.HiddenModelPolicy, models *SessionModelState) *SessionModelState {
+	if models == nil {
+		return nil
+	}
+	out := *models
+	out.AvailableModels = filterModelInfos(policy, models.AvailableModels)
+	return &out
 }

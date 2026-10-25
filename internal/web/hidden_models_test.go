@@ -114,33 +114,75 @@ func TestValidateAndPrepareSaveConfig_InvalidHiddenModelRule_NoMutation(t *testi
 	}
 }
 
+func TestHiddenModelPolicyPublicationSave(t *testing.T) {
+	s, _ := modelShortcutServer(t)
+	s.sessionManager.SetMittoConfig(s.config.MittoConfig)
+	policies := s.sessionManager.HiddenModelPolicies()
+	initial := policies.Snapshot()
+	req := hiddenReq(t, `{"workspaces":[{"working_dir":"/workspace1","acp_server":"test-server"}],"acp_servers":[{"name":"test-server","command":"test-cmd","hidden_models":["^beta$"]}]}`)
+	settings, err := s.buildNewSettings(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.applyConfigChanges(req, settings)
+	accepted := policies.Snapshot()
+	if accepted.Version() <= initial.Version() || !accepted.Policy("test-server").Hides("b", "Beta") {
+		t.Fatal("runtime save did not publish compiled policy")
+	}
+	// The ordinary validation path must leave the exact accepted snapshot intact.
+	invalid := []string{"("}
+	req.ACPServers[0].HiddenModels = &invalid
+	rec := httptest.NewRecorder()
+	if s.validateAndPrepareSaveConfig(rec, req) || rec.Code != http.StatusBadRequest {
+		t.Fatal("invalid update accepted")
+	}
+	if policies.Snapshot() != accepted {
+		t.Fatal("invalid update replaced accepted snapshot")
+	}
+	settings.ACPServers[0].HiddenModels = invalid
+	if warning := s.applyConfigChanges(req, settings); warning == nil {
+		t.Fatal("internal runtime apply accepted invalid rules")
+	}
+	if policies.Snapshot() != accepted || !reflect.DeepEqual(s.config.MittoConfig.ACPServers[0].HiddenModels, []string{"^beta$"}) {
+		t.Fatal("invalid runtime apply mutated accepted policy or config")
+	}
+}
+
 func TestHandleSaveConfig_HiddenModelsRefreshesAttachedViewAndInvalidSavePreservesIt(t *testing.T) {
 	s, _ := modelShortcutServer(t)
 	s.sessionManager.SetMittoConfig(s.config.MittoConfig)
 	policies := s.sessionManager.HiddenModelPolicies()
 	initial := policies.Snapshot()
 	attached := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
-		SessionID: "attached", ACPServer: "test-server", MittoConfig: s.config.MittoConfig, HiddenModelPolicies: policies,
-		AgentModels:    &conversation.SessionModelState{CurrentModelId: "alpha", AvailableModels: []conversation.ModelInfo{{ModelId: "alpha", Name: "Alpha"}, {ModelId: "beta", Name: "Beta"}}},
-		RawAgentModels: &conversation.SessionModelState{CurrentModelId: "alpha", AvailableModels: []conversation.ModelInfo{{ModelId: "alpha", Name: "Alpha"}, {ModelId: "beta", Name: "Beta"}}},
-		ConfigOptions:  []conversation.SessionConfigOption{{ID: "model", Category: conversation.ConfigOptionCategoryModel, Type: conversation.ConfigOptionTypeSelect, CurrentValue: "alpha", Options: []conversation.SessionConfigOptionValue{{Value: "alpha", Name: "Alpha"}, {Value: "beta", Name: "Beta"}}}},
+		SessionID:           "attached",
+		ACPServer:           "test-server",
+		MittoConfig:         s.config.MittoConfig,
+		HiddenModelPolicies: policies,
+		AgentModels:         &conversation.SessionModelState{CurrentModelId: "alpha", AvailableModels: []conversation.ModelInfo{{ModelId: "alpha", Name: "Alpha"}, {ModelId: "beta", Name: "Beta"}}},
+		RawAgentModels:      &conversation.SessionModelState{CurrentModelId: "alpha", AvailableModels: []conversation.ModelInfo{{ModelId: "alpha", Name: "Alpha"}, {ModelId: "beta", Name: "Beta"}}},
+		ConfigOptions:       []conversation.SessionConfigOption{{ID: "model", Category: conversation.ConfigOptionCategoryModel, Type: conversation.ConfigOptionTypeSelect, CurrentValue: "alpha", Options: []conversation.SessionConfigOptionValue{{Value: "alpha", Name: "Alpha"}, {Value: "beta", Name: "Beta"}}}},
 	})
 	s.sessionManager.AddSessionForTest(attached)
 	events := &hiddenPolicyEvents{}
 	s.sessionManager.SetEventsManager(events)
+
+	valid := modelShortcutRequest(`,"acp_servers":[{"name":"test-server","command":"test-cmd","hidden_models":["^beta$"]}]`)
 	w := httptest.NewRecorder()
-	s.handleSaveConfig(w, modelShortcutRequest(`,"acp_servers":[{"name":"test-server","command":"test-cmd","hidden_models":["^beta$"]}]`))
+	s.handleSaveConfig(w, valid)
 	if w.Code != http.StatusOK {
 		t.Fatalf("validated save status = %d, body = %s", w.Code, w.Body.String())
 	}
+
 	accepted := policies.Snapshot()
 	if accepted == initial || !accepted.Policy("test-server").Hides("beta", "Beta") {
 		t.Fatal("validated save did not publish the attached session policy")
 	}
 	assertAttachedPolicyPayload(t, attached, events, 1)
+
 	events.broadcasts = nil
+	invalid := modelShortcutRequest(`,"acp_servers":[{"name":"test-server","command":"test-cmd","hidden_models":["("]}]`)
 	w = httptest.NewRecorder()
-	s.handleSaveConfig(w, modelShortcutRequest(`,"acp_servers":[{"name":"test-server","command":"test-cmd","hidden_models":["("]}]`))
+	s.handleSaveConfig(w, invalid)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("invalid save status = %d, want %d", w.Code, http.StatusBadRequest)
 	}

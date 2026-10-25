@@ -579,6 +579,9 @@ func TestCallbackSink_SetAgentModels_NilOrEmpty(t *testing.T) {
 		if len(d.modelReplacements) != 0 || len(d.asyncConstraintCats) != 0 {
 			t.Fatalf("nil models must not trigger downstream work")
 		}
+		if d.modelClears != 1 {
+			t.Fatalf("nil models must clear the published model option, clears=%d", d.modelClears)
+		}
 	})
 
 	t.Run("empty available", func(t *testing.T) {
@@ -586,6 +589,9 @@ func TestCallbackSink_SetAgentModels_NilOrEmpty(t *testing.T) {
 		s.setAgentModels(d, &SessionModelState{CurrentModelId: "x"})
 		if len(d.modelReplacements) != 0 || len(d.asyncConstraintCats) != 0 {
 			t.Fatalf("empty AvailableModels must not trigger downstream work")
+		}
+		if d.modelClears != 1 {
+			t.Fatalf("policy-empty models must clear the published model option, clears=%d", d.modelClears)
 		}
 	})
 }

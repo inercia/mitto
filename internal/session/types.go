@@ -4,6 +4,8 @@ package session
 import (
 	"fmt"
 	"time"
+
+	"github.com/inercia/mitto/internal/prompts"
 )
 
 // SessionStore defines the interface for session persistence operations.
@@ -404,6 +406,9 @@ type Metadata struct {
 	RunnerRestricted bool   `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
 	CurrentModeID    string `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
 	BaselineModel    string `json:"baseline_model,omitempty"`    // User's intended model; never mutated by per-prompt overrides
+	// PendingInitialModelPreference survives a failed first handshake. Consumed
+	// when BaselineModel is established; never overrides an existing baseline.
+	PendingInitialModelPreference []prompts.PromptPreferredModel `json:"pending_initial_model_preference,omitempty"`
 	// ConfigOptionOverrides holds explicit operator selections of agent-advertised
 	// generic config options (e.g. reasoning effort), keyed by
 	// ConfigOverrideKey(provider, optionID). Agent defaults are never stored here.

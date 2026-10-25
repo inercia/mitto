@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -1369,6 +1370,45 @@ func TestConfigManager_HiddenModelRefusal_StaleIDNotInCatalog(t *testing.T) {
 		t.Fatal("expected refusal")
 	}
 	assertNoHiddenSideEffects(t, d)
+}
+
+// TestConfigManager_SetConfigOption_RefusesSynthesizedModelID_NoHiddenPolicy
+// pins the direct manual-selection guard independently of hidden-model policy.
+// A synthesized profile name is rejected before either the idle RPC path or the
+// prompting queue-admission path can mutate model state or publish success.
+func TestConfigManager_SetConfigOption_RefusesSynthesizedModelID_NoHiddenPolicy(t *testing.T) {
+	for _, prompting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prompting=%v", prompting), func(t *testing.T) {
+			c := configManager{}
+			d := newFakeConfigDeps()
+			d.synthesizedCatalog = true
+			d.isPrompting = prompting
+			d.baselineModel = "agent-confirmed-id"
+			d.currentModelID = "agent-confirmed-id"
+			d.configOptions[0].CurrentValue = "agent-confirmed-id"
+			d.configOptions[0].Options = []SessionConfigOptionValue{{
+				Value: "Synthesized Profile",
+				Name:  "Synthesized Profile",
+			}}
+
+			err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "Synthesized Profile")
+			if !errors.Is(err, errModelCatalogSynthesized) {
+				t.Fatalf("got %v, want synthesized-catalog refusal", err)
+			}
+			if len(d.modelRPCCalls) != 0 || len(d.sessionChanges) != 0 || len(d.notifiedConfig) != 0 {
+				t.Fatalf("unexpected RPC/success side effects: rpc=%v changes=%v notified=%v", d.modelRPCCalls, d.sessionChanges, d.notifiedConfig)
+			}
+			if len(d.pendingConfig) != 0 || len(d.persistedBaseline) != 0 || len(d.persistedConfig) != 0 {
+				t.Fatalf("unexpected queue/persistence side effects: pending=%v baseline=%v config=%v", d.pendingConfig, d.persistedBaseline, d.persistedConfig)
+			}
+			if d.baselineModel != "agent-confirmed-id" || d.currentModelID != "agent-confirmed-id" {
+				t.Fatalf("model state changed: baseline=%q current=%q", d.baselineModel, d.currentModelID)
+			}
+			if got, _ := d.cmFindByID(ConfigOptionCategoryModel); got.CurrentValue != "agent-confirmed-id" {
+				t.Fatalf("model config value changed to %q", got.CurrentValue)
+			}
+		})
+	}
 }
 
 func TestConfigManager_HiddenModelRefusal_SetActiveModelOnly(t *testing.T) {

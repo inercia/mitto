@@ -115,8 +115,27 @@ export function replaceAgentModelOverrides(
   return result;
 }
 
-/** Include a saved model absent from the last-seen catalog as an option. */
-export function modelCatalogOptions(models = [], selectedModelID = "") {
+/**
+ * Include a saved model absent from the last-seen catalog as an option.
+ * `metadata.hidden_saved_ids` (from the backend) lists saved IDs hidden by
+ * policy; those are never resurrected as selectable options.
+ */
+export function modelCatalogOptions(
+  models = [],
+  selectedModelID = "",
+  metadata = {},
+) {
+  const hidden = Array.isArray(metadata?.hidden_saved_ids)
+    ? metadata.hidden_saved_ids
+    : [];
+  if (selectedModelID && hidden.includes(selectedModelID)) {
+    return Array.isArray(models)
+      ? models.filter(
+          (model) =>
+            model && typeof model.id === "string" && model.id !== selectedModelID,
+        )
+      : [];
+  }
   const options = Array.isArray(models)
     ? models.filter((model) => model && typeof model.id === "string")
     : [];

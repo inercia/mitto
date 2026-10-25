@@ -241,6 +241,9 @@ func (bs *BackgroundSession) cmSetSessionMode(ctx context.Context, value string)
 }
 
 func (bs *BackgroundSession) cmSetSessionModel(ctx context.Context, modelID string) error {
+	if bs.testModelSelectionObserver != nil {
+		bs.testModelSelectionObserver("rpc", modelID)
+	}
 	if bs.sharedProcess != nil {
 		// Route through the neutral seam (mitto-mx9.1) when the lease is bound.
 		if ops, ref, ok := bs.leaseSessionOps(); ok {
@@ -275,6 +278,16 @@ func (bs *BackgroundSession) cmSetSessionModel(ctx context.Context, modelID stri
 // cmSetSessionConfigOption sends session/set_config_option for an agent-advertised
 // select and returns the agent's full replacement snapshot.
 func (bs *BackgroundSession) cmSetSessionConfigOption(ctx context.Context, id, value string) ([]SessionConfigOption, error) {
+	snapshot, err := bs.setSessionConfigOptionRaw(ctx, id, value)
+	if err != nil {
+		return nil, err
+	}
+	bs.retainRawGenericOptions(snapshot)
+	// Hidden models must not reappear through the replacement snapshot.
+	return bs.selectableConfigOptions(snapshot, string(bs.modelConfigId)), nil
+}
+
+func (bs *BackgroundSession) setSessionConfigOptionRaw(ctx context.Context, id, value string) ([]SessionConfigOption, error) {
 	if bs.sharedProcess != nil {
 		setter, ok := bs.sharedProcess.(ConfigOptionSetter)
 		if !ok {
@@ -439,8 +452,13 @@ func (bs *BackgroundSession) cmUpdateConfigOptionValue(id, value string) {
 func (bs *BackgroundSession) cmLockPendingConfig()   { bs.pendingConfigMu.Lock() }
 func (bs *BackgroundSession) cmUnlockPendingConfig() { bs.pendingConfigMu.Unlock() }
 
-func (bs *BackgroundSession) cmSetPendingEntry(id, value string) { bs.pendingConfig[id] = value }
-func (bs *BackgroundSession) cmDeletePendingEntry(id string)     { delete(bs.pendingConfig, id) }
+func (bs *BackgroundSession) cmSetPendingEntry(id, value string) {
+	if id == ConfigOptionCategoryModel && bs.testModelSelectionObserver != nil {
+		bs.testModelSelectionObserver("queued", value)
+	}
+	bs.pendingConfig[id] = value
+}
+func (bs *BackgroundSession) cmDeletePendingEntry(id string) { delete(bs.pendingConfig, id) }
 
 func (bs *BackgroundSession) cmDrainPendingConfig() map[string]string {
 	bs.pendingConfigMu.Lock()
@@ -465,6 +483,9 @@ func (bs *BackgroundSession) cmGetBaselineModel() string {
 }
 
 func (bs *BackgroundSession) cmSetBaselineAndClearOverride(baseline string) {
+	if bs.testModelSelectionObserver != nil {
+		bs.testModelSelectionObserver("baseline", baseline)
+	}
 	bs.modelMu.Lock()
 	bs.baselineModel = baseline
 	bs.overrideActive = false
@@ -555,6 +576,9 @@ func (bs *BackgroundSession) cmPersistConfigValue(configID, value string) {
 }
 
 func (bs *BackgroundSession) cmPersistBaselineModel(value string) {
+	if bs.testModelSelectionObserver != nil {
+		bs.testModelSelectionObserver("persist", value)
+	}
 	if bs.store == nil {
 		return
 	}
@@ -574,6 +598,9 @@ func (bs *BackgroundSession) cmPersistBaselineModel(value string) {
 		// the opposite order (modelMu then store).
 		if bs.baselineVersion.Load() == version {
 			m.BaselineModel = value
+			if value != "" {
+				m.PendingInitialModelPreference = nil
+			}
 		}
 	}); err != nil && bs.logger != nil {
 		bs.logger.Warn("Failed to persist baseline model", "model", value, "error", err)
@@ -581,6 +608,9 @@ func (bs *BackgroundSession) cmPersistBaselineModel(value string) {
 }
 
 func (bs *BackgroundSession) cmNotifyConfigChanged(configID, value string) {
+	if configID == ConfigOptionCategoryModel && bs.testModelSelectionObserver != nil {
+		bs.testModelSelectionObserver("notify", value)
+	}
 	if bs.onConfigChanged != nil {
 		bs.onConfigChanged(bs.persistedID, configID, value)
 	}

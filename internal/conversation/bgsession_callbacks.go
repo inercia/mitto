@@ -99,12 +99,13 @@ func (bs *BackgroundSession) setSessionModes(modes *acp.SessionModeState) {
 
 // setConfigOptionsSnapshot installs the agent-advertised generic config options.
 func (bs *BackgroundSession) setConfigOptionsSnapshot(options []SessionConfigOption) {
-	bs.callbackSink.setConfigOptionsSnapshot(bs, bs.selectableConfigOptions(options, string(bs.modelConfigId)))
+	bs.callbackSink.setConfigOptionsSnapshot(bs, options)
 }
 
 // onConfigOptionsUpdate handles an agent config_option_update (replacement snapshot).
 func (bs *BackgroundSession) onConfigOptionsUpdate(options []SessionConfigOption) {
-	bs.callbackSink.onConfigOptionsUpdate(bs, bs.selectableConfigOptions(options, string(bs.modelConfigId)))
+	bs.recordRawConfigOptionCatalog(options)
+	bs.callbackSink.onConfigOptionsUpdate(bs, options)
 }
 
 // setAgentModels converts agent model state to a "model" config option.
@@ -376,24 +377,105 @@ func (bs *BackgroundSession) cbSetLegacyModes(modeOption SessionConfigOption) {
 // cbStoreAgentModels stores an owned copy so async startup model changes cannot
 // mutate the caller's response state while it is still being read or logged.
 func (bs *BackgroundSession) cbStoreAgentModels(models *SessionModelState) {
+	policy, release, err := bs.readHiddenModelPolicy()
+	defer release()
+	bs.rawCatalogMu.Lock()
+	defer bs.rawCatalogMu.Unlock()
+	if err != nil {
+		policy = hideAllModelsPolicy()
+	}
+	// A delayed callback may carry a view derived before a hide/unhide save.
+	// Rebuild from the retained raw observation, not that already-filtered view.
+	if bs.hiddenModelPolicies != nil {
+		if raw := bs.retainedRawModelsLocked(); raw != nil {
+			models = raw
+		}
+	}
 	snapshot := cloneSessionModelState(models)
+	if bs.hiddenModelPolicies != nil {
+		snapshot = filterModelState(policy, snapshot)
+	}
 	bs.agentModelsMu.Lock()
+	if bs.hiddenModelPolicies != nil && bs.rawCatalogGeneration != 0 && snapshot != nil && bs.agentModels != nil &&
+		bs.appliedRawCatalogGeneration == bs.rawCatalogGeneration {
+		snapshot.CurrentModelId = bs.agentModels.CurrentModelId
+	}
 	bs.agentModels = snapshot
 	bs.agentModelsMu.Unlock()
+	bs.appliedRawCatalogGeneration = bs.rawCatalogGeneration
+}
 
+// retainedRawModelsLocked derives an owned snapshot without a new observation.
+// The caller holds rawCatalogMu through its local view commit so an older raw
+// derivation cannot overwrite a newer observation's view.
+func (bs *BackgroundSession) retainedRawModelsLocked() *SessionModelState {
+	opts, resp, retained := bs.rawCatalogOpts, bs.rawCatalogResp, bs.rawCatalogState
+	if retained != nil {
+		return cloneSessionModelState(retained)
+	}
+	if opts == nil && resp == nil {
+		return nil
+	}
+	raw, _, _ := DeriveAgentModels(opts, resp, bs.mittoConfig.EffectiveModelProfiles())
+	return raw
 }
 
 // recordRawAgentCatalog persists the RAW (unfiltered) catalog to the cache.
 // It must run before any hidden-model policy is applied so hide/unhide never
-// loses data. Only a real, non-empty catalog is persisted: a synthesized list
-// is derived from local profiles and an empty update must not erase the last
-// catalog advertised by this ACP server.
+// loses data. Only a real (non-synthesized) catalog is recorded. A real
+// config-option model select with zero options is an authoritative complete-empty
+// catalog and replaces the prior record; a synthesized list (local profiles,
+// including the degraded present-empty ACP `models` field) is never an observation.
 func (bs *BackgroundSession) recordRawAgentCatalog(raw *SessionModelState) {
-	if bs.onAgentModels == nil || raw == nil || raw.Synthesized || len(raw.AvailableModels) == 0 {
+	if raw == nil || raw.Synthesized {
 		return
 	}
-	stateForRecorder := cloneSessionModelState(raw)
-	if err := bs.onAgentModels(bs.acpServer, stateForRecorder.AvailableModels); err != nil && bs.logger != nil {
+	bs.emitCatalogObservation(cloneSessionModelState(raw).AvailableModels)
+}
+
+// recordRawConfigOptionCatalog records a full config-option replacement
+// snapshot as a complete observation, from the raw (unfiltered) model select.
+// Snapshots without a model select are not observations.
+func (bs *BackgroundSession) recordRawConfigOptionCatalog(options []SessionConfigOption) {
+	for _, opt := range options {
+		if opt.Category != "model" && (bs.modelConfigId == "" || opt.ID != string(bs.modelConfigId)) {
+			continue
+		}
+		models := make([]ModelInfo, 0, len(opt.Options))
+		for _, v := range opt.Options {
+			mi := ModelInfo{ModelId: v.Value, Name: v.Name}
+			if v.Description != "" {
+				d := v.Description
+				mi.Description = &d
+			}
+			models = append(models, mi)
+		}
+		bs.emitCatalogObservation(models)
+		return
+	}
+}
+
+func (bs *BackgroundSession) emitCatalogObservation(models []ModelInfo) {
+	if bs.onAgentModels == nil {
+		return
+	}
+	if models == nil {
+		models = []ModelInfo{}
+	}
+	var gen uint64
+	if bs.sharedProcess != nil {
+		if g := bs.sharedProcess.Generation(); g > 0 {
+			gen = uint64(g)
+		}
+	}
+	if err := bs.onAgentModels(ModelCatalogObservation{
+		Server:     bs.acpServer,
+		WorkingDir: bs.workingDir,
+		Models:     models,
+		Complete:   true,
+		Generation: gen,
+		ObservedAt: time.Now(),
+	}); err != nil && bs.logger != nil {
 		bs.logger.Warn("Failed to persist agent model catalog",
 			"acp_server", bs.acpServer,
 			"error", err)
@@ -410,6 +492,11 @@ func (bs *BackgroundSession) pdHiddenModelPolicy() (*config.HiddenModelPolicy, e
 // rules yields a nil (allow-all, no-rule) policy, so a non-nil policy always
 // means rules are active; a compile failure is returned so callers fail closed.
 func (bs *BackgroundSession) hiddenModelPolicy() (*config.HiddenModelPolicy, error) {
+	if bs.hiddenModelPolicies != nil {
+		if snapshot := bs.hiddenModelPolicies.Snapshot(); snapshot != nil {
+			return snapshot.Policy(bs.acpServer), nil
+		}
+	}
 	if bs.mittoConfig == nil {
 		return nil, nil
 	}
@@ -428,12 +515,27 @@ func (bs *BackgroundSession) hiddenModelPolicy() (*config.HiddenModelPolicy, err
 	return policy, err
 }
 
+// readHiddenModelPolicy pins publication only across an in-memory view commit.
+// No callback, observer, storage operation or RPC may run before release.
+func (bs *BackgroundSession) readHiddenModelPolicy() (*config.HiddenModelPolicy, func(), error) {
+	if bs.hiddenModelPolicies != nil {
+		snapshot, release := bs.hiddenModelPolicies.Read()
+		if snapshot != nil {
+			return snapshot.Policy(bs.acpServer), release, nil
+		}
+		release()
+	}
+	policy, err := bs.hiddenModelPolicy()
+	return policy, func() {}, err
+}
+
 // deriveSelectableModels records the raw catalog, then derives the
 // policy-filtered selectable model state. On a policy error it fails closed
 // with a non-nil empty state and never synthesizes.
 func (bs *BackgroundSession) deriveSelectableModels(opts []acp.SessionConfigOption, respModels *acp.SessionModelState) (*SessionModelState, acp.SessionConfigId, string) {
 	profiles := bs.mittoConfig.EffectiveModelProfiles()
 	raw, rawCfgID, rawSource := DeriveAgentModels(opts, respModels, profiles)
+	bs.retainRawCatalog(opts, respModels)
 	bs.recordRawAgentCatalog(raw)
 	policy, err := bs.hiddenModelPolicy()
 	if err != nil {
@@ -445,6 +547,103 @@ func (bs *BackgroundSession) deriveSelectableModels(opts []acp.SessionConfigOpti
 	}
 	models, cfgID, source, _ := DeriveAgentModelsFiltered(policy, opts, respModels, profiles)
 	return models, cfgID, source
+}
+
+func (bs *BackgroundSession) retainRawCatalog(opts []acp.SessionConfigOption, respModels *acp.SessionModelState) {
+	bs.rawCatalogMu.Lock()
+	bs.rawCatalogOpts = opts
+	bs.rawCatalogResp = respModels
+	bs.rawCatalogState = nil
+	bs.rawCatalogGeneration++
+	bs.rawCatalogMu.Unlock()
+}
+
+// retainRawModelState keeps the unfiltered model state reported by the shared
+// session handshake, which is already a derived catalog (no ACP config options
+// to re-derive from). It supersedes any previously retained ACP snapshot.
+func (bs *BackgroundSession) retainRawModelState(models *SessionModelState) {
+	bs.rawCatalogMu.Lock()
+	bs.rawCatalogOpts = nil
+	bs.rawCatalogResp = nil
+	bs.rawCatalogState = models
+	bs.rawCatalogGeneration++
+	bs.rawCatalogMu.Unlock()
+}
+
+// retainRawGenericOptions keeps a deep copy of the unfiltered generic option
+// snapshot (never filtered data) for RefilterModelPolicy.
+func (bs *BackgroundSession) retainRawGenericOptions(options []SessionConfigOption) {
+	cp := make([]SessionConfigOption, len(options))
+	for i, opt := range options {
+		cp[i] = cloneConfigOption(opt)
+	}
+	bs.rawCatalogMu.Lock()
+	bs.rawGenericOpts = cp
+	bs.rawCatalogMu.Unlock()
+}
+
+// RefilterModelPolicy re-derives the selectable model view from the retained
+// raw catalog under the current hidden-model policy and republishes it,
+// clearing the model option when the result is policy-empty. It makes no ACP
+// request and does not re-record the raw catalog. No-op without a retained
+// catalog or a derivable model state.
+func (bs *BackgroundSession) RefilterModelPolicy() {
+	// Obtain the baseline before pinning policy: modelMu may itself precede
+	// policy reads elsewhere. Policy refresh never changes baseline intent.
+	baseline := bs.GetBaselineModel()
+	policy, release, err := bs.readHiddenModelPolicy()
+	defer release()
+	if err != nil {
+		policy = hideAllModelsPolicy()
+	}
+	bs.rawCatalogMu.Lock()
+	defer bs.rawCatalogMu.Unlock()
+	models := filterModelState(policy, bs.retainedRawModelsLocked())
+	rawGeneric := bs.rawGenericOpts
+	filtered := FilterConfigOptions(policy, rawGeneric, string(bs.modelConfigId))
+	// Only local, owned in-memory state is touched while publication is pinned.
+	// No cb* callback, recorder, RPC, or observer runs inside this section.
+	bs.agentModelsMu.Lock()
+	if models != nil {
+		if bs.agentModels != nil {
+			// Retained catalog current is an observation, not a newer switch ACK.
+			models.CurrentModelId = bs.agentModels.CurrentModelId
+		}
+		bs.agentModels = models
+	}
+	bs.agentModelsMu.Unlock()
+	bs.configMu.Lock()
+	next := make([]SessionConfigOption, 0, len(bs.configOptions)+len(filtered)+1)
+	for _, opt := range bs.configOptions {
+		if models != nil && opt.Category == ConfigOptionCategoryModel {
+			continue
+		}
+		if rawGeneric != nil && isGenericConfigOption(opt) {
+			continue
+		}
+		next = append(next, opt)
+	}
+	for _, opt := range filtered {
+		if isGenericConfigOption(opt) {
+			next = append(next, cloneConfigOption(opt))
+		}
+	}
+	if models != nil && len(models.AvailableModels) > 0 {
+		current := models.CurrentModelId
+		for _, model := range models.AvailableModels {
+			if model.ModelId == baseline && baseline != "" {
+				current = baseline
+				break
+			}
+		}
+		next = append(next, SessionConfigOption{
+			ID: ConfigOptionCategoryModel, Name: "Model", Description: "AI model for this session",
+			Category: ConfigOptionCategoryModel, Type: ConfigOptionTypeSelect,
+			CurrentValue: current, Options: ModelsToConfigOptions(models),
+		})
+	}
+	bs.configOptions = next
+	bs.configMu.Unlock()
 }
 
 // hideAllModelsPolicy is the fail-closed policy used when the configured
@@ -466,6 +665,10 @@ func (bs *BackgroundSession) selectableConfigOptions(opts []SessionConfigOption,
 
 // cbClearModelConfigOption removes any model config option.
 func (bs *BackgroundSession) cbClearModelConfigOption() {
+	if bs.hiddenModelPolicies != nil {
+		bs.replaceModelPolicyOption(nil)
+		return
+	}
 	bs.configMu.Lock()
 	kept := make([]SessionConfigOption, 0, len(bs.configOptions))
 	for _, opt := range bs.configOptions {
@@ -494,6 +697,10 @@ func (bs *BackgroundSession) cbGetBaselineModel() string {
 // cbReplaceModelConfigOption removes any existing model config option and
 // appends the new one.
 func (bs *BackgroundSession) cbReplaceModelConfigOption(modelOption SessionConfigOption) {
+	if bs.hiddenModelPolicies != nil {
+		bs.replaceModelPolicyOption(&modelOption)
+		return
+	}
 	bs.configMu.Lock()
 	filtered := make([]SessionConfigOption, 0, len(bs.configOptions)+1)
 	for _, opt := range bs.configOptions {
@@ -503,6 +710,61 @@ func (bs *BackgroundSession) cbReplaceModelConfigOption(modelOption SessionConfi
 	}
 	bs.configOptions = append(filtered, modelOption)
 	bs.configMu.Unlock()
+}
+
+// replaceModelPolicyOption commits a callback's model option using the current
+// policy and latest raw catalog, even if its incoming filtered option is stale.
+// It deliberately has no observer/RPC/persistence side effects.
+func (bs *BackgroundSession) replaceModelPolicyOption(option *SessionConfigOption) {
+	baseline := bs.GetBaselineModel()
+	policy, release, err := bs.readHiddenModelPolicy()
+	defer release()
+	if err != nil {
+		policy = hideAllModelsPolicy()
+	}
+	bs.rawCatalogMu.Lock()
+	defer bs.rawCatalogMu.Unlock()
+	if raw := bs.retainedRawModelsLocked(); raw != nil {
+		models := filterModelState(policy, raw)
+		option = nil
+		if len(models.AvailableModels) > 0 {
+			bs.agentModelsMu.RLock()
+			current := models.CurrentModelId
+			if bs.agentModels != nil {
+				current = bs.agentModels.CurrentModelId
+			}
+			bs.agentModelsMu.RUnlock()
+			for _, model := range models.AvailableModels {
+				if model.ModelId == baseline && baseline != "" {
+					current = baseline
+					break
+				}
+			}
+			option = &SessionConfigOption{
+				ID: ConfigOptionCategoryModel, Name: "Model", Description: "AI model for this session",
+				Category: ConfigOptionCategoryModel, Type: ConfigOptionTypeSelect,
+				CurrentValue: current, Options: ModelsToConfigOptions(models),
+			}
+		}
+	} else if option != nil {
+		filtered := FilterConfigOptions(policy, []SessionConfigOption{*option}, string(bs.modelConfigId))
+		option = &filtered[0]
+		if len(option.Options) == 0 {
+			option = nil
+		}
+	}
+	bs.configMu.Lock()
+	defer bs.configMu.Unlock()
+	next := make([]SessionConfigOption, 0, len(bs.configOptions)+1)
+	for _, opt := range bs.configOptions {
+		if opt.Category != ConfigOptionCategoryModel {
+			next = append(next, opt)
+		}
+	}
+	if option != nil {
+		next = append(next, cloneConfigOption(*option))
+	}
+	bs.configOptions = next
 }
 
 // isGenericConfigOption reports whether an advertised option is neither the
@@ -517,6 +779,20 @@ func isGenericConfigOption(opt SessionConfigOption) bool {
 // options with the supplied snapshot, preserving the existing mode/model
 // entries and the agent's order for the generic ones.
 func (bs *BackgroundSession) cbReplaceGenericConfigOptions(options []SessionConfigOption) {
+	policy, release, err := bs.readHiddenModelPolicy()
+	defer release()
+	if err != nil {
+		policy = hideAllModelsPolicy()
+	}
+	bs.rawCatalogMu.Lock()
+	defer bs.rawCatalogMu.Unlock()
+	// Retain this fresh replacement (including RPC responses), not a previous
+	// callback's catalog. Filtering and the view commit share the policy read.
+	bs.rawGenericOpts = make([]SessionConfigOption, len(options))
+	for i, option := range options {
+		bs.rawGenericOpts[i] = cloneConfigOption(option)
+	}
+	options = FilterConfigOptions(policy, options, string(bs.modelConfigId))
 	bs.configMu.Lock()
 	next := make([]SessionConfigOption, 0, len(bs.configOptions)+len(options))
 	for _, opt := range bs.configOptions {

@@ -1477,3 +1477,28 @@ func TestBuildNewSettings_ModelShortcutsIndependentCopy(t *testing.T) {
 		t.Fatalf("nil config mappings = %+v, err=%v", settings.ModelShortcuts, err)
 	}
 }
+
+func TestChangedHiddenModelServers(t *testing.T) {
+	previous := hiddenModelsByServer(&config.Config{ACPServers: []config.ACPServer{
+		{Name: "opencode", HiddenModels: []string{"^a$", "^b$"}},
+		{Name: "stable", HiddenModels: []string{"^x$"}},
+		{Name: "old-name", HiddenModels: []string{"^y$"}},
+	}})
+
+	next := []config.ACPServer{
+		{Name: "opencode", HiddenModels: []string{"^a$", "^b$", "   "}}, // blank rule ignored
+		{Name: "stable", HiddenModels: []string{"^x$", "^z$"}},          // changed
+		{Name: "new-name", HiddenModels: []string{"^y$"}},               // renamed only
+		{Name: "fresh", HiddenModels: []string{".*"}},                   // brand new
+	}
+
+	got := changedHiddenModelServers(previous, next, map[string]string{"old-name": "new-name"})
+	want := []string{"stable", "fresh"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changed = %v, want %v", got, want)
+	}
+
+	if got := changedHiddenModelServers(nil, nil, nil); len(got) != 0 {
+		t.Fatalf("empty config changed = %v", got)
+	}
+}

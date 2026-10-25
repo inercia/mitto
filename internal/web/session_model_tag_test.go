@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 )
 
@@ -19,6 +20,62 @@ func modelTagTestSession() *conversation.BackgroundSession {
 		SessionID:   "socket-session",
 		AgentModels: &conversation.SessionModelState{CurrentModelId: "sonnet", AvailableModels: []conversation.ModelInfo{{ModelId: "sonnet", Name: "Claude Sonnet 5"}}},
 	})
+}
+
+func hiddenModelTagTestSession(prompting bool, events *[]string, notifications *int) *conversation.BackgroundSession {
+	return conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+		SessionID:   "socket-session",
+		IsPrompting: prompting,
+		ACPServer:   "test-server",
+		MittoConfig: &config.Config{
+			ACPServers: []config.ACPServer{{Name: "test-server", Command: "x", HiddenModels: []string{"^hidden$"}}},
+			Models: []config.ModelProfile{{
+				Name:     "Hidden coding",
+				Tags:     []string{"Coding"},
+				Criteria: &config.ACPServerConstraint{Pattern: "hidden", MatchMode: "exact"},
+			}},
+		},
+		AgentModels: &conversation.SessionModelState{
+			CurrentModelId:  "hidden",
+			AvailableModels: []conversation.ModelInfo{{ModelId: "hidden", Name: "Hidden model"}},
+		},
+		ConfigOptions: []conversation.SessionConfigOption{{
+			ID: string(conversation.ModelConfigId), Category: conversation.ConfigOptionCategoryModel,
+			CurrentValue: "hidden", Options: []conversation.SessionConfigOptionValue{{Value: "hidden", Name: "Hidden model"}},
+		}},
+		OnConfigOptionChanged: func(string, string, string) { *notifications++ },
+		OnModelSelectionEvent: func(kind, value string) { *events = append(*events, kind+":"+value) },
+	})
+}
+
+func TestSetConfigOption_HiddenModelRefusedWithoutSideEffects(t *testing.T) {
+	for _, prompting := range []bool{false, true} {
+		t.Run(map[bool]string{false: "idle", true: "prompting"}[prompting], func(t *testing.T) {
+			mock := newMockWSConn()
+			var events []string
+			notifications := 0
+			bs := hiddenModelTagTestSession(prompting, &events, &notifications)
+			client := &SessionWSClient{sessionID: "socket-session", bgSession: bs, wsConn: &WSConn{send: mock.send}}
+			client.handleSetConfigOption(string(conversation.ModelConfigId), "hidden")
+
+			if len(events) != 0 || notifications != 0 || bs.GetBaselineModel() != "" {
+				t.Fatalf("events=%v notifications=%d baseline=%q", events, notifications, bs.GetBaselineModel())
+			}
+			errorCount := 0
+			for len(mock.send) > 0 {
+				var message WSMessage
+				if err := json.Unmarshal(<-mock.send, &message); err != nil {
+					t.Fatal(err)
+				}
+				if message.Type == WSMsgTypeError {
+					errorCount++
+				}
+			}
+			if errorCount != 1 {
+				t.Fatalf("error responses=%d, want 1", errorCount)
+			}
+		})
+	}
 }
 
 func TestModelTagDispatchValidation(t *testing.T) {

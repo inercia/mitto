@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -250,5 +251,99 @@ func TestLoopRunner_OnTasksAcceptedLongRunningPromptAdvancesBaseline(t *testing.
 	}
 	if claimHeld {
 		t.Fatal("loop dispatch did not complete after transport was unblocked")
+	}
+}
+
+func TestPromptWithMeta_ModelHiddenBeforeExecution_RefusedPreDispatch_U4(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test", t.TempDir(), ""); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	shared := newFakeSharedProcess()
+	cfg := &config.Config{ACPServers: []config.ACPServer{{Name: "srv", Command: "x"}}}
+	bs := &BackgroundSession{
+		ctx: ctx, cancel: cancel, observers: make(map[SessionObserver]struct{}),
+		store: store, recorder: recorder, persistedID: recorder.SessionID(), nextSeq: 2,
+		sharedProcess: shared, acpID: "acp-sess-1", pendingConfig: make(map[string]string),
+		acpServer: "srv", mittoConfig: cfg,
+		agentModels: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}},
+		},
+	}
+	bs.markACPContextFresh()
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	observer := &mockSessionObserver{}
+	bs.AddObserver(observer)
+
+	run := func(msg string) (error, bool) {
+		var accepted atomic.Bool
+		completed := make(chan error, 1)
+		if err := bs.PromptWithMeta(msg, PromptMeta{
+			OnDispatchAccepted: func() { accepted.Store(true) },
+			OnComplete:         func(err error) { completed <- err },
+		}); err != nil {
+			t.Fatalf("PromptWithMeta() error = %v", err)
+		}
+		select {
+		case err := <-completed:
+			return err, accepted.Load()
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for completion")
+		}
+		return nil, false
+	}
+
+	// Eligible when prepared: no policy, the turn dispatches.
+	if err, accepted := run("eligible"); err != nil || !accepted {
+		t.Fatalf("control run err=%v accepted=%v, want nil/true", err, accepted)
+	}
+	shared.mu.Lock()
+	before := len(shared.promptCalls)
+	shared.mu.Unlock()
+	if before != 1 {
+		t.Fatalf("control prompt RPCs = %d, want 1", before)
+	}
+	userPromptsBefore := len(observer.getUserPromptMessages())
+	eventsBefore, _ := store.ReadEvents(recorder.SessionID())
+	metaBefore, _ := store.GetMetadata(recorder.SessionID())
+
+	// Policy hides the model before the next execution.
+	cfg.ACPServers[0].HiddenModels = []string{"Model 1"}
+	err, accepted := run("hidden now")
+	if !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("OnComplete error = %v, want errModelHiddenByPolicy", err)
+	}
+	if accepted {
+		t.Fatal("OnDispatchAccepted called for hidden model")
+	}
+	shared.mu.Lock()
+	after := len(shared.promptCalls)
+	shared.mu.Unlock()
+	if after != before {
+		t.Fatalf("prompt RPCs = %d, want %d (none for hidden request)", after, before)
+	}
+	if got := len(observer.getUserPromptMessages()); got != userPromptsBefore {
+		t.Fatalf("user prompt broadcasts = %d, want %d", got, userPromptsBefore)
+	}
+	events, _ := store.ReadEvents(recorder.SessionID())
+	for _, e := range events[len(eventsBefore):] {
+		if e.Type == session.EventTypeUserPrompt || e.Type == session.EventTypeAgentMessage {
+			t.Fatalf("unexpected persisted %s event for refused turn", e.Type)
+		}
+	}
+	metaAfter, _ := store.GetMetadata(recorder.SessionID())
+	if metaAfter.BaselineModel != metaBefore.BaselineModel {
+		t.Fatalf("baseline changed %q -> %q", metaBefore.BaselineModel, metaAfter.BaselineModel)
+	}
+	if bs.agentModels.CurrentModelId != "m-1" {
+		t.Fatalf("current model mutated to %q", bs.agentModels.CurrentModelId)
 	}
 }

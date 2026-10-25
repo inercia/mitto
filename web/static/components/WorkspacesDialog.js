@@ -556,6 +556,7 @@ export function WorkspacesDialog({
       activeTab,
       selectedWorkspace,
       selectedWorkspaceKey,
+      editAcpServer,
     });
 
   // MCP install/remove + ACP restart cluster: owns install form state (open,
@@ -1029,8 +1030,14 @@ export function WorkspacesDialog({
           <button
             onClick=${handleSave}
             data-testid="ws-save"
-            disabled=${saving || loading || (selectedWorkspace && activeTab === "models" && !modelOverridesValid)}
-            title=${selectedWorkspace && activeTab === "models" && !modelOverridesValid
+            disabled=${saving ||
+            loading ||
+            (selectedWorkspace &&
+              activeTab === "models" &&
+              !modelOverridesValid)}
+            title=${selectedWorkspace &&
+            activeTab === "models" &&
+            !modelOverridesValid
               ? "Complete or resolve model override groups before saving"
               : ""}
             class="btn btn-primary btn-sm gap-2"

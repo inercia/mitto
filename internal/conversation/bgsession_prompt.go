@@ -1716,6 +1716,8 @@ func (bs *BackgroundSession) pdModelProfiles() []config.ModelProfile {
 }
 
 func (bs *BackgroundSession) modelOverrideForTag(tag string) (string, bool) {
+	bs.modelOverridesMu.RLock()
+	defer bs.modelOverridesMu.RUnlock()
 	return bs.modelOverrides.OverrideFor(bs.acpServer, tag)
 }
 

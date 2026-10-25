@@ -65,7 +65,25 @@ type BackgroundSession struct {
 	// by agentModelsMu; callers use AgentModels() snapshots. Lock order is
 	// modelMu → agentModelsMu. Never hold agentModelsMu across callbacks or RPCs.
 	agentModelsMu sync.RWMutex
-	agentModels   *SessionModelState
+	// hiddenModelPolicies is shared with the runtime configuration publisher.
+	// Nil is retained for standalone/legacy construction with immutable config.
+	hiddenModelPolicies *config.HiddenModelPolicies
+	// rawCatalog retains the last unfiltered ACP model observation so a policy
+	// change can be re-applied without another RPC (RefilterModelPolicy).
+	rawCatalogMu   sync.Mutex
+	rawCatalogOpts []acp.SessionConfigOption
+	rawCatalogResp *acp.SessionModelState
+	// Generations are guarded by rawCatalogMu. Replaying an already installed
+	// observation must not roll back a newer acknowledged current model.
+	rawCatalogGeneration        uint64
+	appliedRawCatalogGeneration uint64
+	// rawCatalogState is the last unfiltered model state reported by the shared
+	// session handshake, which delivers a derived catalog rather than raw ACP
+	// config options. Takes precedence over rawCatalogOpts/rawCatalogResp.
+	rawCatalogState *SessionModelState
+	// rawGenericOpts is the last unfiltered generic config-option snapshot.
+	rawGenericOpts []SessionConfigOption
+	agentModels    *SessionModelState
 	// onAgentModels records an agent-confirmed non-empty catalog after the
 	// in-memory snapshot has been updated and its lock released.
 	onAgentModels AgentModelCatalogRecorder
@@ -281,13 +299,15 @@ type BackgroundSession struct {
 	acpServerConstraints   map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	mittoConfig            *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
 	// initialModelPreference is the per-workspace initial-model preference
-	// used to seed fresh top-level sessions by cbInitBaselineModelIfEmpty.
-	// Nil for resumed sessions, auto-children, and workspaces without a
-	// preference configured.
+	// used to seed any conversation without a saved baseline by
+	// cbInitBaselineModelIfEmpty, regardless of its creation/ retry path.
 	initialModelPreference []config.PromptPreferredModel
-	// modelOverrides is the immutable per-workspace override list used by all
-	// model-tag selection paths for this session.
+	// modelOverrides is the per-workspace override list used by all model-tag
+	// selection paths for this session. It is copied at creation and refreshed
+	// by SessionManager.SetWorkspaces when the workspace configuration changes,
+	// so already-running sessions honor edited overrides without a resume.
 	modelOverrides      config.ModelOverrides
+	modelOverridesMu    sync.RWMutex
 	contextFlushCommand string                  // Agent-native context-flush command (e.g. "/clear"); empty = disabled
 	procCtl             acpProcessController    // ACP restart policy collaborator (composition)
 	titleCoord          titleCoordinator        // Auto-title generation triggers collaborator (composition)
@@ -306,7 +326,11 @@ type BackgroundSession struct {
 	configMu        sync.RWMutex
 	configOptions   []SessionConfigOption                          // All config options (includes mode if available)
 	onConfigChanged func(sessionID string, configID, value string) // Called when any config option changes
-	usesLegacyModes bool                                           // True if using legacy modes API (not configOptions)
+	// testModelSelectionObserver is test-only instrumentation injected by
+	// NewTestBackgroundSession. It observes model-selection side effects without
+	// changing the production config/RPC funnel.
+	testModelSelectionObserver func(kind, value string)
+	usesLegacyModes            bool // True if using legacy modes API (not configOptions)
 
 	// pendingConfig holds config changes (configID→value) recorded while the agent
 	// is prompting. The real ACP RPC is deferred and issued on the prompting→idle
@@ -528,10 +552,22 @@ type activeUIPrompt struct {
 	cancelFn   context.CancelFunc
 }
 
-// AgentModelCatalogRecorder persists models advertised by an ACP server. It is
-// called only for non-empty, non-synthesized model lists and receives no
-// currently selected model ID.
-type AgentModelCatalogRecorder func(acpServer string, models []ModelInfo) error
+// ModelCatalogObservation is a typed, protocol-neutral observation of the
+// raw model catalog advertised by an ACP server for a working directory.
+// Models carries no currently selected model ID.
+type ModelCatalogObservation struct {
+	Server     string
+	WorkingDir string
+	Models     []ModelInfo
+	// Complete reports that Models is the authoritative full list.
+	Complete   bool
+	Generation uint64
+	ObservedAt time.Time
+}
+
+// AgentModelCatalogRecorder persists a raw model catalog observation. It is
+// called only for non-empty, non-synthesized model lists.
+type AgentModelCatalogRecorder func(obs ModelCatalogObservation) error
 
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
 type BackgroundSessionConfig struct {
@@ -563,7 +599,8 @@ type BackgroundSessionConfig struct {
 	WorkspaceName       string                      // Display name for workspace-scoped UI notifications
 
 	// MittoConfig is the full Mitto configuration (used for default flags)
-	MittoConfig *config.Config
+	MittoConfig         *config.Config
+	HiddenModelPolicies *config.HiddenModelPolicies
 
 	// InitialModelPreference is the initial-model preference (workspace or
 	// ACP-server InitialModelProfile/InitialModelTag, or an auto-child's
@@ -807,6 +844,12 @@ type BackgroundSessionTestOpts struct {
 	ACPServer           string
 	MittoConfig         *config.Config
 	HiddenModelPolicies *config.HiddenModelPolicies
+	// OnConfigOptionChanged and OnModelSelectionEvent observe successful config
+	// notifications and model-selection side effects respectively. The latter is
+	// test-only and reports "rpc", "queued", "baseline", "persist", and
+	// "notify" events when those boundaries are reached.
+	OnConfigOptionChanged func(sessionID string, configID, value string)
+	OnModelSelectionEvent func(kind, value string)
 	// ProviderDiscoverer exposes NeutralProviderDiscoverer() to external
 	// packages (e.g. internal/web/handlers' neutral descriptor projection,
 	// mitto-mx9.5) without depending on a real BackendLease/BackendProvider.
@@ -822,22 +865,24 @@ type BackgroundSessionTestOpts struct {
 // Use this for tests that need to set multiple private fields.
 func NewTestBackgroundSession(opts BackgroundSessionTestOpts) *BackgroundSession {
 	bs := &BackgroundSession{
-		persistedID:             opts.SessionID,
-		workingDir:              opts.WorkingDir,
-		workspaceUUID:           opts.WorkspaceUUID,
-		acpID:                   opts.ACPID,
-		isPrompting:             opts.IsPrompting,
-		nextSeq:                 opts.NextSeq,
-		store:                   opts.Store,
-		promptResolver:          opts.PromptResolver,
-		promptFragmentsResolver: opts.PromptFragmentsResolver,
-		contextFlushCommand:     opts.ContextFlushCommand,
-		agentSupportsImages:     opts.AgentSupportsImages,
-		agentModels:             opts.AgentModels,
-		configOptions:           opts.ConfigOptions,
-		acpServer:               opts.ACPServer,
-		mittoConfig:             opts.MittoConfig,
-		hiddenModelPolicies:     opts.HiddenModelPolicies,
+		persistedID:                opts.SessionID,
+		workingDir:                 opts.WorkingDir,
+		workspaceUUID:              opts.WorkspaceUUID,
+		acpID:                      opts.ACPID,
+		isPrompting:                opts.IsPrompting,
+		nextSeq:                    opts.NextSeq,
+		store:                      opts.Store,
+		promptResolver:             opts.PromptResolver,
+		promptFragmentsResolver:    opts.PromptFragmentsResolver,
+		contextFlushCommand:        opts.ContextFlushCommand,
+		agentSupportsImages:        opts.AgentSupportsImages,
+		agentModels:                opts.AgentModels,
+		configOptions:              opts.ConfigOptions,
+		acpServer:                  opts.ACPServer,
+		mittoConfig:                opts.MittoConfig,
+		hiddenModelPolicies:        opts.HiddenModelPolicies,
+		onConfigChanged:            opts.OnConfigOptionChanged,
+		testModelSelectionObserver: opts.OnModelSelectionEvent,
 	}
 	if opts.RawAgentModels != nil {
 		bs.retainRawModelState(opts.RawAgentModels)
@@ -974,6 +1019,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = cfg.MittoConfig
+	bs.hiddenModelPolicies = cfg.HiddenModelPolicies
 	// Per-workspace initial-model preference (applied after agent reports models).
 	bs.initialModelPreference = cfg.InitialModelPreference
 	// Workspace overrides are copied above so later workspace updates cannot mutate
@@ -1027,7 +1073,8 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			runnerType = cfg.Runner.Type()
 			isRestricted = cfg.Runner.IsRestricted()
 		}
-		cfg.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
+		if err := cfg.Store.UpdateMetadata(bs.persistedID, func(meta *session.Metadata) {
+			meta.PendingInitialModelPreference = append([]config.PromptPreferredModel(nil), cfg.InitialModelPreference...)
 			if cfg.SessionName != "" {
 				meta.Name = cfg.SessionName
 			}
@@ -1060,7 +1107,10 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 					}
 				}
 			}
-		})
+		}); err != nil {
+			cancel()
+			return nil, fmt.Errorf("persist initial session settings: %w", err)
+		}
 
 		// Initialize nextSeq from MaxSeq if available, otherwise from EventCount
 		// MaxSeq tracks the highest seq persisted, which may be higher than EventCount
@@ -1172,6 +1222,16 @@ func cloneWorkspaceModelOverrides(overrides config.ModelOverrides) config.ModelO
 	return append(config.ModelOverrides(nil), overrides...)
 }
 
+// setModelOverrides replaces the workspace-scoped model overrides used by tag
+// resolution. SessionManager.SetWorkspaces calls it for live sessions so a
+// settings edit takes effect without resuming the conversation.
+func (bs *BackgroundSession) setModelOverrides(overrides config.ModelOverrides) {
+	cloned := cloneWorkspaceModelOverrides(overrides)
+	bs.modelOverridesMu.Lock()
+	bs.modelOverrides = cloned
+	bs.modelOverridesMu.Unlock()
+}
+
 // ResumeBackgroundSession creates a background session for an existing persisted session.
 // This is used when switching to an old conversation - we create a new ACP connection
 // but continue recording to the existing session.
@@ -1251,6 +1311,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	bs.acpServerConstraints = lookupACPServerConstraints(config.MittoConfig, config.ACPServer)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = config.MittoConfig
+	bs.hiddenModelPolicies = config.HiddenModelPolicies
 	// Initial-model preference (workspace/ACP-server InitialModelTag, or an
 	// auto-child's ModelTag): applied by cbInitBaselineModelIfEmpty after the
 	// agent reports its models, unless a persisted BaselineModel already wins.

@@ -461,6 +461,52 @@ if (process.env.MITTO_WORKSPACE_EDITOR_TEST_CHILD === "1") {
         unmount(container);
       }
     });
+
+    const scoped = (dir) =>
+      defaultProps({
+        selectedWorkspace: { uuid: "workspace-1", working_dir: "/proj" },
+        editModelOverrides: [
+          { acp_server: "opencode", tag: "smart", model_id: "" },
+        ],
+        modelsData: {
+          acp_server: "opencode",
+          working_dir: dir,
+          models: [{ id: "model-1", name: "Model One" }],
+          live: false,
+        },
+      });
+
+    test("shows models when both server and folder match", () => {
+      const container = mount(scoped("/proj/"));
+      try {
+        expect(container.textContent).toContain("Model One");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("hides models when the folder differs", () => {
+      const container = mount(scoped("/other"));
+      try {
+        expect(container.textContent).not.toContain("Model One");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("shows exact cache-only refresh wording", () => {
+      const container = mount(scoped("/proj"));
+      try {
+        const note = container.querySelector(
+          '[data-testid="ws-model-catalog-refresh-note"]',
+        );
+        expect(note.textContent).toBe(
+          "Refresh reloads the last-observed catalog. It does not contact the agent.",
+        );
+      } finally {
+        unmount(container);
+      }
+    });
   });
 } else {
   describe("WorkspaceEditor", () => {

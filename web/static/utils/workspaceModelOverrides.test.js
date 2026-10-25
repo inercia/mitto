@@ -100,4 +100,39 @@ describe("workspace model override helpers", () => {
       { id: "saved-id", name: "saved-id (unavailable)", unavailable: true },
     ]);
   });
+
+  test("hidden saved IDs are never appended as unavailable options", () => {
+    const models = [{ id: "known", name: "Known" }];
+    expect(
+      modelCatalogOptions(models, "secret", { hidden_saved_ids: ["secret"] }),
+    ).toEqual(models);
+    expect(
+      modelCatalogOptions([], "secret", {
+        catalog_state: "policy_empty",
+        hidden_saved_ids: ["secret"],
+      }),
+    ).toEqual([]);
+  });
+
+  test("unavailable non-hidden saved IDs keep unavailable semantics with metadata", () => {
+    expect(
+      modelCatalogOptions([{ id: "known", name: "Known" }], "retired", {
+        hidden_saved_ids: ["secret"],
+        unavailable_saved_ids: ["retired"],
+      }),
+    ).toEqual([
+      { id: "known", name: "Known" },
+      { id: "retired", name: "retired (unavailable)", unavailable: true },
+    ]);
+  });
+
+  test("catalog order is unchanged and malformed metadata is tolerated", () => {
+    const models = [
+      { id: "b", name: "B" },
+      { id: "a", name: "A" },
+    ];
+    expect(modelCatalogOptions(models, "a", { hidden_saved_ids: ["x"] })).toEqual(models);
+    expect(modelCatalogOptions(models, "b", { hidden_saved_ids: "b" })).toEqual(models);
+    expect(modelCatalogOptions(models, "b", null)).toEqual(models);
+  });
 });

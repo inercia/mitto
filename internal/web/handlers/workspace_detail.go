@@ -52,10 +52,20 @@ func (h *Handlers) handleWorkspaceACPStatus(w http.ResponseWriter, r *http.Reque
 
 // WorkspaceModelsResponse is the last-seen advertised catalog for a workspace's ACP server.
 type WorkspaceModelsResponse struct {
-	ACPServer string             `json:"acp_server"`
-	Models    []modelcache.Model `json:"models"`
-	Live      bool               `json:"live"`
-	UpdatedAt *time.Time         `json:"updated_at,omitempty"`
+	ACPServer string `json:"acp_server"`
+	// WorkingDir echoes the exact folder scope used for the cache lookup.
+	WorkingDir string             `json:"working_dir"`
+	Models     []modelcache.Model `json:"models"`
+	Live       bool               `json:"live"`
+	UpdatedAt  *time.Time         `json:"updated_at,omitempty"`
+
+	// Additive metadata. CatalogState is absent|available|policy_empty
+	// ("empty" is a trusted explicit-empty record for the exact
+	// server and folder scope).
+	CatalogState        string   `json:"catalog_state"`
+	HiddenCount         int      `json:"hidden_count"`
+	HiddenSavedIDs      []string `json:"hidden_saved_ids,omitempty"`
+	UnavailableSavedIDs []string `json:"unavailable_saved_ids,omitempty"`
 }
 
 // handleWorkspaceModels serves the cached catalog independently of any one
@@ -69,20 +79,78 @@ func (h *Handlers) handleWorkspaceModels(w http.ResponseWriter, r *http.Request,
 	}
 
 	response := WorkspaceModelsResponse{
-		ACPServer: ws.ACPServer,
-		Models:    []modelcache.Model{},
+		ACPServer:    ws.ACPServer,
+		WorkingDir:   ws.WorkingDir,
+		Models:       []modelcache.Model{},
+		CatalogState: "absent",
 	}
 	if h.deps.ModelCache != nil {
-		if catalog, ok := h.deps.ModelCache.Get(ws.ACPServer); ok {
-			response.Models = catalog.Models
+		if catalog, ok := h.deps.ModelCache.Get(ws.ACPServer, ws.WorkingDir); ok {
 			updatedAt := catalog.UpdatedAt
 			response.UpdatedAt = &updatedAt
+			h.applyHiddenModelPolicy(&response, ws, catalog.Models)
 		}
 	}
 	if h.deps.HasLiveWorkspaceACP != nil {
 		response.Live = h.deps.HasLiveWorkspaceACP(workspaceUUID)
 	}
 	writeJSONOK(w, response)
+}
+
+// applyHiddenModelPolicy filters the raw cached models through the configured
+// ACP server's hidden-model policy and fills the additive metadata. A policy
+// that fails to compile fails closed (nothing selectable).
+func (h *Handlers) applyHiddenModelPolicy(resp *WorkspaceModelsResponse, ws *configPkg.WorkspaceSettings, raw []modelcache.Model) {
+	var rules []string
+	if _, cfg := h.deps.SessionManager.GetGlobalRunnerInfo(); cfg != nil {
+		if srv, err := cfg.GetServer(ws.ACPServer); err == nil && srv != nil {
+			rules = srv.HiddenModels
+		}
+	}
+	policy, err := configPkg.CompileHiddenModels(ws.ACPServer, rules)
+	failClosed := err != nil
+	if failClosed && h.deps.Logger != nil {
+		h.deps.Logger.Warn("hidden-model policy failed to compile; failing closed",
+			"acp_server", ws.ACPServer, "error", err)
+	}
+	hides := func(id, name string) bool {
+		return failClosed || (policy != nil && policy.Hides(id, name))
+	}
+	selectable := make([]modelcache.Model, 0, len(raw))
+	byID := make(map[string]modelcache.Model, len(raw))
+	for _, m := range raw {
+		byID[m.ID] = m
+		if !hides(m.ID, m.Name) {
+			selectable = append(selectable, m)
+		}
+	}
+	resp.Models = selectable
+	resp.HiddenCount = len(raw) - len(selectable)
+	resp.CatalogState = "available"
+	if len(raw) == 0 {
+		resp.CatalogState = "empty"
+	} else if len(selectable) == 0 {
+		resp.CatalogState = "policy_empty"
+	}
+	selectableIDs := make(map[string]bool, len(selectable))
+	for _, m := range selectable {
+		selectableIDs[m.ID] = true
+	}
+	for _, o := range ws.ModelOverrides {
+		if o.ACPServer != ws.ACPServer || o.ModelID == "" {
+			continue
+		}
+		name := ""
+		if m, ok := byID[o.ModelID]; ok {
+			name = m.Name
+		}
+		switch {
+		case hides(o.ModelID, name):
+			resp.HiddenSavedIDs = append(resp.HiddenSavedIDs, o.ModelID)
+		case !selectableIDs[o.ModelID]:
+			resp.UnavailableSavedIDs = append(resp.UnavailableSavedIDs, o.ModelID)
+		}
+	}
 }
 
 // EffectiveRunnerConfigResponse is the response for GET /api/workspaces/{uuid}/effective-runner-config.

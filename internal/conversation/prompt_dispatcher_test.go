@@ -4804,3 +4804,33 @@ func TestActiveModelPreflight_U4(t *testing.T) {
 		t.Fatalf("nil models without policy no-op: %v", err)
 	}
 }
+
+func TestActiveModelPreflight_QueuedModelHiddenBeforeExecution_U4(t *testing.T) {
+	d := &fakePromptDeps{}
+	d.agentModels = &SessionModelState{
+		CurrentModelId:  "m-1",
+		AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}},
+	}
+	// Eligible when queued/selected.
+	if err := activeModelPreflight(d); err != nil {
+		t.Fatalf("eligible at queue time: %v", err)
+	}
+	// Hidden by an active policy before execution.
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 1")
+	err := activeModelPreflight(d)
+	if !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("execution-time hide must be refused, got %v", err)
+	}
+	if d.agentModels.CurrentModelId != "m-1" || len(d.agentModels.AvailableModels) != 1 {
+		t.Fatalf("model state mutated: %+v", d.agentModels)
+	}
+	if d.persistActivationCalls != 0 || len(d.notifiedErrors) != 0 || d.handshakeCalls != 0 {
+		t.Fatalf("preflight caused side effects: persist=%d errs=%v handshake=%d",
+			d.persistActivationCalls, d.notifiedErrors, d.handshakeCalls)
+	}
+	// Policy lifted: prior behavior restored.
+	d.hiddenPolicy = nil
+	if err := activeModelPreflight(d); err != nil {
+		t.Fatalf("no-rule behavior restored: %v", err)
+	}
+}

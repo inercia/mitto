@@ -153,7 +153,8 @@ type SessionManager struct {
 	globalRestrictedRunners map[string]*config.WorkspaceRunnerConfig
 
 	// mittoConfig contains the full Mitto configuration (for looking up agent configs).
-	mittoConfig *config.Config
+	mittoConfig         *config.Config
+	hiddenModelPolicies *config.HiddenModelPolicies
 
 	// processorManager manages external command processors for message transformation.
 	processorManager *processors.Manager
@@ -537,8 +538,40 @@ func (sm *SessionManager) SetAPIPrefix(prefix string) {
 
 // SetWorkspaces sets the available workspaces.
 // Workspaces without UUIDs will have UUIDs generated automatically.
+//
+// Live sessions cache their workspace model overrides at creation, so the
+// registry replacement is followed by a refresh that lets already-running
+// conversations resolve model tags against the edited overrides (mitto-971).
 func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
 	sm.wsRegistry.SetWorkspaces(workspaces)
+	sm.RefreshModelOverrides()
+}
+
+// RefreshModelOverrides re-resolves each live session's workspace-scoped model
+// overrides from the workspace registry. Sessions whose workspace can no longer
+// be resolved keep their previous overrides. Returns the number of refreshed
+// sessions.
+func (sm *SessionManager) RefreshModelOverrides() int {
+	sm.mu.RLock()
+	sessions := make([]*BackgroundSession, 0, len(sm.sessions))
+	for _, bs := range sm.sessions {
+		sessions = append(sessions, bs)
+	}
+	sm.mu.RUnlock()
+
+	refreshed := 0
+	for _, bs := range sessions {
+		ws := sm.wsRegistry.GetWorkspaceByUUID(bs.workspaceUUID)
+		if ws == nil {
+			ws = sm.wsRegistry.GetWorkspaceByDirAndACP(bs.workingDir, bs.acpServer)
+		}
+		if ws == nil {
+			continue
+		}
+		bs.setModelOverrides(ws.ModelOverrides)
+		refreshed++
+	}
+	return refreshed
 }
 
 // GetWorkspaces returns all configured workspaces in configuration order.
@@ -683,15 +716,11 @@ func resolveAutoChildInitialModelPreference(child config.AutoChild, targetWS *co
 	if child.ModelTag != "" {
 		return []config.PromptPreferredModel{{ModelTag: child.ModelTag}}
 	}
-	if pref := targetWS.GetInitialModelPreference(); pref != nil {
-		return pref
+	server := ""
+	if targetWS != nil {
+		server = targetWS.ACPServer
 	}
-	if cfg != nil && targetWS != nil {
-		if srv, err := cfg.GetServer(targetWS.ACPServer); err == nil {
-			return srv.GetInitialModelPreference()
-		}
-	}
-	return nil
+	return defaultInitialModelPreference(targetWS, server, cfg)
 }
 
 // GetWorkspacesForFolder returns all workspace configurations for the given folder.
@@ -2154,10 +2183,34 @@ func (sm *SessionManager) SetGlobalMCPServer(srv *mcpserver.Server) {
 // SetMittoConfig sets the full Mitto configuration.
 // This is used to look up agent-specific runner configurations.
 func (sm *SessionManager) SetMittoConfig(cfg *config.Config) {
+	policies := sm.HiddenModelPolicies()
+	var servers []config.ACPServer
+	if cfg != nil {
+		servers = cfg.ACPServers
+	}
+	snapshot, err := policies.Prepare(servers)
+	if err != nil {
+		if sm.logger != nil {
+			sm.logger.Error("Invalid hidden-model policy; retaining runtime configuration", "error", err)
+		}
+	} else {
+		policies.Publish(snapshot)
+	}
 	sm.mu.Lock()
 	sm.mittoConfig = cfg
 	sm.mu.Unlock()
 	sm.wsRegistry.setMittoConfig(cfg)
+}
+
+// HiddenModelPolicies returns the runtime owner shared by live/new/resumed
+// sessions. Publication is independent of the mutable general configuration.
+func (sm *SessionManager) HiddenModelPolicies() *config.HiddenModelPolicies {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if sm.hiddenModelPolicies == nil {
+		sm.hiddenModelPolicies = &config.HiddenModelPolicies{}
+	}
+	return sm.hiddenModelPolicies
 }
 
 // GetGlobalRunnerInfo returns the global restricted runner configs and the full Mitto config.
@@ -2477,7 +2530,8 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 	// ResumeSessionWithInitialModelPreference (see createAutoChildren); a plain
 	// ResumeSession leaves this nil so a resumed session's own current model is
 	// preserved rather than re-applying workspace/ACP-server defaults.
-	initialModelPref := sm.resolveInitialModelPreference(opts.InitialPromptName, workingDir, effectiveWs.GetInitialModelPreference())
+	initialModelPref := sm.resolveInitialModelPreference(opts.InitialPromptName, workingDir,
+		defaultInitialModelPreference(effectiveWs, acpServer, sm.mittoConfig))
 
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
@@ -2502,7 +2556,8 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		APIPrefix:                      sm.apiPrefix,
 		WorkspaceUUID:                  workspaceUUID,
 		WorkspaceName:                  workspaceName,
-		MittoConfig:                    sm.mittoConfig,   // Pass config for default flags
+		MittoConfig:                    sm.mittoConfig, // Pass config for default flags
+		HiddenModelPolicies:            sm.HiddenModelPolicies(),
 		InitialModelPreference:         initialModelPref, // Per-workspace initial-model preference (applied on fresh sessions)
 		ModelOverrides:                 workspaceModelOverrides,
 		AvailableACPServers:            availableServers, // Pre-computed workspace server list
@@ -2732,6 +2787,43 @@ func (sm *SessionManager) broadcastConfigOptionChanged(sessionID, configID, valu
 	sm.eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, payload)
 }
 
+// RefilterModelPolicyForServers re-applies the hidden-model policy to every
+// live session of the given ACP servers and broadcasts the refreshed config
+// snapshot to their clients. It works from each session's retained raw catalog,
+// so no ACP round-trip is needed. Returns the number of sessions refiltered.
+func (sm *SessionManager) RefilterModelPolicyForServers(acpServers []string) int {
+	if len(acpServers) == 0 {
+		return 0
+	}
+	wanted := make(map[string]struct{}, len(acpServers))
+	for _, name := range acpServers {
+		wanted[name] = struct{}{}
+	}
+	sm.mu.RLock()
+	type liveSession struct {
+		id string
+		bs *BackgroundSession
+	}
+	live := make([]liveSession, 0, len(sm.sessions))
+	for id, bs := range sm.sessions {
+		live = append(live, liveSession{id: id, bs: bs})
+	}
+	sm.mu.RUnlock()
+
+	refiltered := 0
+	for _, s := range live {
+		if _, ok := wanted[s.bs.GetACPServer()]; !ok {
+			continue
+		}
+		s.bs.RefilterModelPolicy()
+		// The model option lives in the session's config snapshot; push it so
+		// open clients replace their stale (policy-filtered) list immediately.
+		sm.broadcastConfigOptionChanged(s.id, "", "")
+		refiltered++
+	}
+	return refiltered
+}
+
 // GetSession returns a running session by ID, or nil if not found.
 func (sm *SessionManager) GetSession(sessionID string) *BackgroundSession {
 	sm.mu.RLock()
@@ -2839,35 +2931,9 @@ func (sm *SessionManager) ResumeSessionBackground(sessionID, sessionName, workin
 	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil, false)
 }
 
-// resolveInitialModelPreference returns the initial-model preference for a
-// genuinely new conversation created to run promptName: the prompt's
-// preferredModels first, followed by fallback (workspace/ACP-server
-// preference) so an unmatched prompt preference still degrades to it.
-// With an empty promptName, no resolver, or no prompt preference, fallback is
-// returned unchanged.
-func (sm *SessionManager) resolveInitialModelPreference(promptName, workingDir string, fallback []config.PromptPreferredModel) []config.PromptPreferredModel {
-	if promptName == "" {
-		return fallback
-	}
-	sm.mu.RLock()
-	resolver := sm.preferredModelsResolver
-	sm.mu.RUnlock()
-	if resolver == nil {
-		return fallback
-	}
-	prefs := resolver(promptName, workingDir)
-	if len(prefs) == 0 {
-		return fallback
-	}
-	merged := make([]config.PromptPreferredModel, 0, len(prefs)+len(fallback))
-	merged = append(merged, prefs...)
-	merged = append(merged, fallback...)
-	return merged
-}
-
 // ResumeSessionWithInitialPrompt starts the ACP session of a freshly persisted
 // conversation that was created to run promptName, seeding the prompt's
-// preferredModels as the initial-model preference. Only for genuinely new
+// preferredModels ahead of the workspace/ACP-server initial preference. Only for genuinely new
 // conversations: an existing persisted BaselineModel always wins on resume, and
 // an already-running session is returned unchanged. With an empty promptName it
 // behaves like ResumeSession.
@@ -2881,7 +2947,7 @@ func (sm *SessionManager) ResumeSessionWithInitialPrompt(sessionID, sessionName,
 // initial-model preference (resolved by cbInitBaselineModelIfEmpty via
 // SelectHighestPriorityModel once the agent reports its models). Used by
 // auto-children to apply a per-child model tag. Pass nil to fall back to the
-// default ACP-server-derived model selection.
+// workspace/ACP-server default model selection.
 func (sm *SessionManager) ResumeSessionWithInitialModelPreference(sessionID, sessionName, workingDir string, initialModelPref []config.PromptPreferredModel) (*BackgroundSession, error) {
 	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, initialModelPref, true)
 }
@@ -2989,6 +3055,14 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		sm.mu.Unlock()
 		cancelResume()
 		close(pr.done)
+	}
+
+	// Every startup path (MCP, auto-child, queue/loop retry and ordinary resume)
+	// uses the resolved target workspace, never an arbitrary folder default.
+	initialModelPref, err := sm.prepareInitialModelPreference(sessionID, workingDir, foundWs, acpServer, initialModelPref)
+	if err != nil {
+		signalDone(nil, err)
+		return nil, err
 	}
 
 	// Load workspace-specific conversation config and merge with global.
@@ -3220,7 +3294,8 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		APIPrefix:                      sm.apiPrefix,
 		WorkspaceUUID:                  workspaceUUID,
 		WorkspaceName:                  workspaceName,
-		MittoConfig:                    sm.mittoConfig,   // Pass config for default flags
+		MittoConfig:                    sm.mittoConfig, // Pass config for default flags
+		HiddenModelPolicies:            sm.HiddenModelPolicies(),
 		InitialModelPreference:         initialModelPref, // Initial-model preference: workspace/ACP-server default or auto-child model_tag (mitto-b3qe)
 		ModelOverrides:                 workspaceModelOverrides,
 		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list

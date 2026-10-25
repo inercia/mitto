@@ -53,7 +53,9 @@ function WorkspaceModelOverridesEditor({
   onValidityChange,
 }) {
   const rows = modelOverridesForAgent(editModelOverrides, editAcpServer);
-  const rowsKey = JSON.stringify(rows.map(({ tag, model_id }) => ({ tag, model_id })));
+  const rowsKey = JSON.stringify(
+    rows.map(({ tag, model_id }) => ({ tag, model_id })),
+  );
   const contextKey = `${getWorkspaceKey(selectedWorkspace)}\u0000${editAcpServer}`;
   const [draft, setDraft] = useState(() => ({
     contextKey,
@@ -121,13 +123,21 @@ function WorkspaceModelOverridesEditor({
       replaceAgentModelOverrides(previous, editAcpServer, nextRows),
     );
   };
-  const models =
-    modelsData?.acp_server === editAcpServer ? modelsData?.models || [] : [];
+  const trimDir = (d) => String(d || "").replace(/\/+$/, "");
+  const scopeMatches =
+    !!modelsData &&
+    modelsData.acp_server === editAcpServer &&
+    trimDir(modelsData.working_dir) === trimDir(selectedWorkspace?.working_dir);
+  const models = scopeMatches ? modelsData?.models || [] : [];
   const tags = collectModelTags(modelProfiles);
-  const allTags = [...new Set([
-    ...tags,
-    ...groups.flatMap((group) => group.tagCounts.map((entry) => entry.tag)),
-  ].filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const allTags = [
+    ...new Set(
+      [
+        ...tags,
+        ...groups.flatMap((group) => group.tagCounts.map((entry) => entry.tag)),
+      ].filter(Boolean),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
   const nextOrder =
     groups.reduce(
       (max, group) =>
@@ -154,18 +164,22 @@ function WorkspaceModelOverridesEditor({
     publishGroups(
       groups
         .map((group) => {
-        const tagEntry = group.tagCounts.find((entry) => entry.tag === tag);
-        if (!tagEntry) return group;
-        const tagCounts = group.tagCounts.filter((entry) => entry.tag !== tag);
-        if ((group.model_id || "") === modelID) tagCounts.push(tagEntry);
-        return { ...group, tagCounts };
+          const tagEntry = group.tagCounts.find((entry) => entry.tag === tag);
+          if (!tagEntry) return group;
+          const tagCounts = group.tagCounts.filter(
+            (entry) => entry.tag !== tag,
+          );
+          if ((group.model_id || "") === modelID) tagCounts.push(tagEntry);
+          return { ...group, tagCounts };
         })
-        .filter((group) =>
-          group.tagCounts.length > 0 ||
-          !groups.some((original) =>
-            original.key === group.key &&
-            original.tagCounts.some((entry) => entry.tag === tag),
-          ),
+        .filter(
+          (group) =>
+            group.tagCounts.length > 0 ||
+            !groups.some(
+              (original) =>
+                original.key === group.key &&
+                original.tagCounts.some((entry) => entry.tag === tag),
+            ),
         ),
     );
   };
@@ -182,7 +196,8 @@ function WorkspaceModelOverridesEditor({
           </p>
         </div>
         <div class="flex gap-1 shrink-0">
-          ${selectedWorkspace?.uuid && html`<button
+          ${selectedWorkspace?.uuid &&
+          html`<button
             type="button"
             class="btn btn-ghost btn-square btn-sm"
             data-testid="ws-model-catalog-refresh"
@@ -196,47 +211,82 @@ function WorkspaceModelOverridesEditor({
           </button>`}
         </div>
       </div>
-
+      ${selectedWorkspace?.uuid &&
+      html`<p
+        class="text-xs text-mitto-text-muted"
+        data-testid="ws-model-catalog-refresh-note"
+      >
+        ${"Refresh reloads the last-observed catalog. It does not contact the agent."}
+      </p>`}
       ${modelsLoading
-        ? html`<div class="flex items-center gap-2 text-sm text-mitto-text-muted" role="status">
+        ? html`<div
+            class="flex items-center gap-2 text-sm text-mitto-text-muted"
+            role="status"
+          >
             <${SpinnerIcon} className="w-4 h-4" /> Loading available models…
           </div>`
         : modelsError
           ? html`<p class="text-sm text-mitto-warning" role="status">
               ${modelsError} Saved overrides are preserved.
             </p>`
-          : !modelsData || modelsData?.acp_server !== editAcpServer || models.length === 0
+          : !scopeMatches || models.length === 0
             ? html`<p class="text-sm text-mitto-text-muted" role="status">
                 ${!selectedWorkspace?.uuid
                   ? "Save this workspace before model options can be loaded."
-                  : modelsData?.acp_server === editAcpServer
+                  : scopeMatches
                     ? "No model catalog is available yet. Start the agent to discover models; saved overrides are preserved."
                     : "Save the agent selection before its model catalog can be loaded; saved overrides are preserved."}
               </p>`
-            : html`<p class="text-xs text-mitto-text-muted" data-testid="ws-model-catalog-status">
-                ${modelsData.live ? "Agent is running" : "Showing last-seen models"}
+            : html`<p
+                class="text-xs text-mitto-text-muted"
+                data-testid="ws-model-catalog-status"
+              >
+                Showing last-observed catalog
                 ${modelsData.updated_at
                   ? ` · Updated ${new Date(modelsData.updated_at).toLocaleString()}`
                   : ""}
               </p>`}
-
-      ${conflicts.length > 0 && html`<div class="alert alert-warning" role="alert">
+      ${conflicts.length > 0 &&
+      html`<div class="alert alert-warning" role="alert">
         <div class="w-full space-y-2">
-          <p class="font-medium">Some saved tags have conflicting model assignments. Choose which model to keep for each tag before editing or saving.</p>
-          ${conflicts.map(({ tag, modelIDs }) => html`
-            <label class="flex flex-wrap items-center gap-2 text-sm" key=${tag}>
-              <span>${tag}</span>
-              <select class="select select-sm" aria-label=${`Choose model to keep for conflicting tag ${tag}`} value="" onChange=${(event) => resolveConflict(tag, event.target.value)}>
-                <option value="" disabled>Choose a model to keep</option>
-                ${modelIDs.map((id) => html`<option value=${id || "__empty__"} key=${id || "__empty__"}>${id || "(empty model)"}</option>`)}
-              </select>
-            </label>
-          `)}
+          <p class="font-medium">
+            Some saved tags have conflicting model assignments. Choose which
+            model to keep for each tag before editing or saving.
+          </p>
+          ${conflicts.map(
+            ({ tag, modelIDs }) => html`
+              <label
+                class="flex flex-wrap items-center gap-2 text-sm"
+                key=${tag}
+              >
+                <span>${tag}</span>
+                <select
+                  class="select select-sm"
+                  aria-label=${`Choose model to keep for conflicting tag ${tag}`}
+                  value=""
+                  onChange=${(event) =>
+                    resolveConflict(tag, event.target.value)}
+                >
+                  <option value="" disabled>Choose a model to keep</option>
+                  ${modelIDs.map(
+                    (id) =>
+                      html`<option
+                        value=${id || "__empty__"}
+                        key=${id || "__empty__"}
+                      >
+                        ${id || "(empty model)"}
+                      </option>`,
+                  )}
+                </select>
+              </label>
+            `,
+          )}
         </div>
       </div>`}
-
       ${groups.length === 0
-        ? html`<p class="rounded-md border border-dashed border-mitto-border p-6 text-center text-sm text-mitto-text-muted">
+        ? html`<p
+            class="rounded-md border border-dashed border-mitto-border p-6 text-center text-sm text-mitto-text-muted"
+          >
             No model overrides configured for this agent.
           </p>`
         : html`<div class="space-y-2">
@@ -245,15 +295,22 @@ function WorkspaceModelOverridesEditor({
               const selectedTags = selected.map((entry) => entry.tag);
               const options = modelCatalogOptions(models, group.model_id);
               const open = openGroupKey === group.key;
-              const assignedElsewhere = (tag) => groups.some(
-                (other) => other.key !== group.key && other.tagCounts.some((entry) => entry.tag === tag),
-              );
-              const summary = selectedTags.length === 0
-                ? "Choose tags"
-                : selectedTags.length <= 2
-                  ? selectedTags.join(", ")
-                  : `${selectedTags.slice(0, 2).join(", ")} and ${selectedTags.length - 2} more`;
-              return html`<div class="flex flex-row items-center gap-2" key=${group.key}>
+              const assignedElsewhere = (tag) =>
+                groups.some(
+                  (other) =>
+                    other.key !== group.key &&
+                    other.tagCounts.some((entry) => entry.tag === tag),
+                );
+              const summary =
+                selectedTags.length === 0
+                  ? "Choose tags"
+                  : selectedTags.length <= 2
+                    ? selectedTags.join(", ")
+                    : `${selectedTags.slice(0, 2).join(", ")} and ${selectedTags.length - 2} more`;
+              return html`<div
+                class="flex flex-row items-center gap-2"
+                key=${group.key}
+              >
                 <div
                   class="relative flex-1 min-w-0"
                   ref=${open ? dropdownRef : null}
@@ -288,19 +345,56 @@ function WorkspaceModelOverridesEditor({
                       }
                     }}
                   >
-                    <span class="truncate" title=${selectedTags.join(", ")}>${summary}</span>
+                    <span class="truncate" title=${selectedTags.join(", ")}
+                      >${summary}</span
+                    >
                     <span aria-hidden="true">▾</span>
                   </button>
-                  ${open && html`<div id=${`ws-model-override-tags-${index}`} ref=${panelRef} style="max-height: 15rem" class="absolute left-0 right-0 top-full z-20 mt-1 overflow-y-auto rounded-box border border-base-300 bg-mitto-bg p-2 shadow-lg" role="group" aria-label="Capability tags">
+                  ${open &&
+                  html`<div
+                    id=${`ws-model-override-tags-${index}`}
+                    ref=${panelRef}
+                    style="max-height: 15rem"
+                    class="absolute left-0 right-0 top-full z-20 mt-1 overflow-y-auto rounded-box border border-base-300 bg-mitto-bg p-2 shadow-lg"
+                    role="group"
+                    aria-label="Capability tags"
+                  >
                     ${allTags.length === 0
-                      ? html`<p class="p-2 text-xs text-mitto-text-muted">No tags defined in model profiles.</p>`
+                      ? html`<p class="p-2 text-xs text-mitto-text-muted">
+                          No tags defined in model profiles.
+                        </p>`
                       : allTags.map((tag) => {
                           const checked = selectedTags.includes(tag);
                           const assigned = assignedElsewhere(tag);
-                          return html`<label class="flex items-center gap-2 rounded px-2 py-1.5 text-sm ${assigned ? "opacity-60" : "cursor-pointer hover:bg-base-200"}" key=${tag} title=${assigned ? "Already assigned to another model group" : tag}>
-                            <input type="checkbox" class="checkbox checkbox-sm" checked=${checked} disabled=${assigned || conflicts.some((conflict) => conflict.tag === tag)} onChange=${(event) => toggleTag(group.key, tag, event.target.checked)} />
-                            <span>${tag}${!tags.includes(tag) ? " (unavailable)" : ""}</span>
-                            ${assigned && html`<span class="sr-only">Already assigned to another model group</span>`}
+                          return html`<label
+                            class="flex items-center gap-2 rounded px-2 py-1.5 text-sm ${assigned
+                              ? "opacity-60"
+                              : "cursor-pointer hover:bg-base-200"}"
+                            key=${tag}
+                            title=${assigned
+                              ? "Already assigned to another model group"
+                              : tag}
+                          >
+                            <input
+                              type="checkbox"
+                              class="checkbox checkbox-sm"
+                              checked=${checked}
+                              disabled=${assigned ||
+                              conflicts.some(
+                                (conflict) => conflict.tag === tag,
+                              )}
+                              onChange=${(event) =>
+                                toggleTag(group.key, tag, event.target.checked)}
+                            />
+                            <span
+                              >${tag}${!tags.includes(tag)
+                                ? " (unavailable)"
+                                : ""}</span
+                            >
+                            ${assigned &&
+                            html`<span class="sr-only"
+                              >Already assigned to another model group</span
+                            >`}
                           </label>`;
                         })}
                   </div>`}
@@ -312,25 +406,48 @@ function WorkspaceModelOverridesEditor({
                   data-testid=${`ws-model-override-model-${index}`}
                   value=${group.model_id || ""}
                   disabled=${conflicts.length > 0}
-                  onChange=${(event) => publishGroups(groups.map((row) => row.key === group.key ? { ...row, model_id: event.target.value } : row))}
+                  onChange=${(event) =>
+                    publishGroups(
+                      groups.map((row) =>
+                        row.key === group.key
+                          ? { ...row, model_id: event.target.value }
+                          : row,
+                      ),
+                    )}
                 >
-                  <option value="">${models.length ? "Choose a model" : "No models available"}</option>
-                  ${options.map((model) => html`<option key=${model.id} value=${model.id} title=${model.description || model.name}>${model.name || model.id}</option>`)}
+                  <option value="">
+                    ${models.length ? "Choose a model" : "No models available"}
+                  </option>
+                  ${options.map(
+                    (model) =>
+                      html`<option
+                        key=${model.id}
+                        value=${model.id}
+                        title=${model.description || model.name}
+                      >
+                        ${model.name || model.id}
+                      </option>`,
+                  )}
                 </select>
                 <button
                   type="button"
                   class="btn btn-ghost btn-square btn-sm text-mitto-danger"
                   aria-label=${`Remove model override group ${index + 1}`}
                   data-testid=${`ws-model-override-remove-${index}`}
-                  onClick=${() => publishGroups(groups.filter((row) => row.key !== group.key))}
+                  onClick=${() =>
+                    publishGroups(
+                      groups.filter((row) => row.key !== group.key),
+                    )}
                 >
                   <${TrashIcon} className="w-4 h-4" />
                 </button>
               </div>`;
             })}
           </div>`}
-      ${incomplete && html`<p class="text-sm text-mitto-warning" role="status">
-        Complete or remove every draft group before saving: each group needs a model and at least one tag.
+      ${incomplete &&
+      html`<p class="text-sm text-mitto-warning" role="status">
+        Complete or remove every draft group before saving: each group needs a
+        model and at least one tag.
       </p>`}
       <div class="mt-3 flex items-center gap-2">
         <button
@@ -338,7 +455,16 @@ function WorkspaceModelOverridesEditor({
           class="btn btn-sm btn-ghost"
           data-testid="ws-model-override-add"
           disabled=${!editAcpServer || conflicts.length > 0}
-          onClick=${() => publishGroups([...groups, { key: `new-${Date.now()}-${groups.length}`, model_id: "", order: nextOrder, tagCounts: [] }])}
+          onClick=${() =>
+            publishGroups([
+              ...groups,
+              {
+                key: `new-${Date.now()}-${groups.length}`,
+                model_id: "",
+                order: nextOrder,
+                tagCounts: [],
+              },
+            ])}
         >
           + Add override group
         </button>

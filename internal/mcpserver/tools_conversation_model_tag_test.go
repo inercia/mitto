@@ -12,6 +12,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -81,7 +82,7 @@ func (m *mockBackgroundSessionForModelTag) ActivePromptDispatch() (string, map[s
 // session id not in the map returns nil (mirrors production's "not running").
 type mockSessionManagerForModelTag struct {
 	mu                  sync.Mutex
-	sessions            map[string]*mockBackgroundSessionForModelTag
+	sessions            map[string]BackgroundSession
 	resumeMock          *mockBackgroundSessionForModelTag // returned from ResumeSession and inserted at that key
 	workspacesForFolder []config.WorkspaceSettings
 	broadcastCreated    []broadcastCall
@@ -89,7 +90,7 @@ type mockSessionManagerForModelTag struct {
 
 func newMockSessionManagerForModelTag() *mockSessionManagerForModelTag {
 	return &mockSessionManagerForModelTag{
-		sessions: make(map[string]*mockBackgroundSessionForModelTag),
+		sessions: make(map[string]BackgroundSession),
 	}
 }
 
@@ -467,5 +468,54 @@ func TestConversationStart_ModelTag_Empty_Skipped(t *testing.T) {
 	calls := sm.resumeMock.callsSnapshot()
 	if len(calls) != 0 {
 		t.Errorf("ApplyModelTag calls = %v, want no calls when ModelTag is empty at spawn", calls)
+	}
+}
+
+func TestConversationStart_ModelTag_FailureDoesNotScheduleWork(t *testing.T) {
+	for _, started := range []bool{false, true} {
+		t.Run(fmt.Sprintf("started=%t", started), func(t *testing.T) {
+			store, srv, sm, callerID := setupModelTagServer(t)
+			if started {
+				sm.resumeMock = &mockBackgroundSessionForModelTag{applyErr: errors.New("no available model matches tag")}
+			}
+			_, _, err := srv.handleConversationStart(context.Background(), nil, ConversationStartInput{
+				SelfID: callerID, Title: "Must not run unpinned", ModelTag: "Coding",
+				InitialPrompt: "do work", LoopPrompt: "repeat work",
+				LoopFrequencyValue: 1, LoopFrequencyUnit: "hours",
+			})
+			if err == nil || !strings.Contains(err.Error(), "model_tag") {
+				t.Fatalf("expected pin failure, got %v", err)
+			}
+			metas, err := store.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var child *session.Metadata
+			for _, m := range metas {
+				if m.ParentSessionID == callerID {
+					child = &m
+				}
+			}
+			if child == nil {
+				t.Fatal("failed child should be recoverable")
+			}
+			if len(child.PendingInitialModelPreference) != 1 || child.PendingInitialModelPreference[0].ModelTag != "Coding" {
+				t.Fatal("requested model intent was lost")
+			}
+			loop, err := store.Loop(child.SessionID).Get()
+			if err != nil && !errors.Is(err, session.ErrLoopNotFound) {
+				t.Fatal(err)
+			}
+			if loop != nil {
+				t.Fatal("loop configured before model pin succeeded")
+			}
+			n, err := store.Queue(child.SessionID).Len()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Fatal("prompt queued before model pin succeeded")
+			}
+		})
 	}
 }

@@ -611,17 +611,10 @@ func NewServer(config Config) (*Server, error) {
 	if cacheErr != nil {
 		logger.Warn("Failed to load agent model catalog cache; starting with an empty cache", "error", cacheErr)
 	}
-	sessionMgr.SetAgentModelCatalogRecorder(func(acpServer string, models []conversation.ModelInfo) error {
-		cachedModels := make([]modelcache.Model, len(models))
-		for i, model := range models {
-			cachedModels[i] = modelcache.Model{
-				ID:          model.ModelId,
-				Name:        model.Name,
-				Description: model.Description,
-			}
-		}
-		return modelCatalogCache.Record(acpServer, cachedModels)
-	})
+	modelCatalogRecorder := func(obs conversation.ModelCatalogObservation) error {
+		return modelCatalogCache.Record(modelCatalogObservationToCache(obs))
+	}
+	sessionMgr.SetAgentModelCatalogRecorder(modelCatalogRecorder)
 
 	// Create shared ACP process manager for workspace-level process sharing.
 	// Clean up orphaned ACP processes from any previous Mitto instance that crashed
@@ -631,6 +624,8 @@ func NewServer(config Config) (*Server, error) {
 	if os.Getenv("MITTO_TEST_MODE") == "" {
 		acpProcessMgr.CleanupOrphanedProcesses()
 	}
+	acpProcessMgr.ModelCatalogRecorder = modelCatalogRecorder
+	acpProcessMgr.HiddenModelPolicies = sessionMgr.HiddenModelPolicies()
 	acpProcessMgr.DisableAuxiliary = config.DisableAuxiliaryPrewarm || os.Getenv("MITTO_TEST_MODE") != ""
 	// Set workspace config provider so process manager can resolve auxiliary config.
 	acpProcessMgr.WorkspaceConfigProvider = func(workspaceUUID string) *configPkg.WorkspaceSettings {
@@ -4601,5 +4596,26 @@ func parseAutoArchivePeriod(period string) (time.Duration, error) {
 		return 90 * 24 * time.Hour, nil
 	default:
 		return 0, fmt.Errorf("invalid auto-archive period: %s", period)
+	}
+}
+
+// modelCatalogObservationToCache maps a conversation observation onto the
+// scoped model cache record API.
+func modelCatalogObservationToCache(obs conversation.ModelCatalogObservation) modelcache.Observation {
+	models := make([]modelcache.Model, len(obs.Models))
+	for i, model := range obs.Models {
+		models[i] = modelcache.Model{
+			ID:          model.ModelId,
+			Name:        model.Name,
+			Description: model.Description,
+		}
+	}
+	return modelcache.Observation{
+		Server:     obs.Server,
+		WorkingDir: obs.WorkingDir,
+		Models:     models,
+		Complete:   obs.Complete,
+		Generation: obs.Generation,
+		ObservedAt: obs.ObservedAt,
 	}
 }

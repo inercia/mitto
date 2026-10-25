@@ -39,6 +39,13 @@ type ACPProcessManager struct {
 	// Used to look up AuxiliaryModelSelection for new auxiliary sessions.
 	WorkspaceConfigProvider func(workspaceUUID string) *config.WorkspaceSettings
 
+	// ModelCatalogRecorder, when set, receives the raw model catalog already
+	// returned by an auxiliary session/new. It never triggers extra RPCs.
+	ModelCatalogRecorder conversation.AgentModelCatalogRecorder
+	// HiddenModelPolicies shares validated runtime snapshots with conversation
+	// sessions. Auxiliary execution enforcement is a separate increment.
+	HiddenModelPolicies *config.HiddenModelPolicies
+
 	// PrewarmConfigProvider returns the effective adaptive pre-warming
 	// thresholds (mitto-mw0). May be nil, in which case the built-in defaults
 	// from config.PrewarmConfig helpers are used. The web layer wires this to
@@ -1874,6 +1881,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	newCtx, newCancel := context.WithTimeout(m.ctx, auxSessionCreateBudget)
 	defer newCancel()
 	newSessionStart := time.Now()
+	catalogGen := process.Generation()
 	sessionHandle, err := process.NewSession(newCtx, auxCwd, mcpServers)
 	newSessionLatency := time.Since(newSessionStart)
 	if err != nil {
@@ -1894,6 +1902,8 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 			"session_id", sessionHandle.SessionID,
 			"new_session_ms", newSessionLatency.Milliseconds())
 	}
+
+	m.forwardModelCatalog(process, process.config.ACPServer, catalogGen, sessionHandle.Models)
 
 	initialModelID := ""
 	if sessionHandle.Models != nil {
@@ -2542,4 +2552,35 @@ func (m *ACPProcessManager) auxSessionExists(key auxSessionKey) bool {
 func (m *ACPProcessManager) ReevaluatePrewarmPin(workspaceUUID string, logger *slog.Logger) {
 	m.ExpirePinsAndAlert()
 	m.probePrewarmHealth(workspaceUUID, logger)
+}
+
+// catalogProcess is the read-only process view needed to scope an observation.
+type catalogProcess interface {
+	WorkingDir() string
+	Generation() int
+}
+
+// forwardModelCatalog forwards an already-returned authoritative session/new
+// catalog to the recorder. Synthesized/nil catalogs are not observations, and
+// data from a superseded process generation is dropped. It issues no RPC.
+func (m *ACPProcessManager) forwardModelCatalog(process catalogProcess, server string, gen int, models *conversation.SessionModelState) {
+	if m.ModelCatalogRecorder == nil || models == nil || models.Synthesized || gen <= 0 {
+		return
+	}
+	if process.Generation() != gen {
+		return
+	}
+	list := make([]conversation.ModelInfo, len(models.AvailableModels))
+	copy(list, models.AvailableModels)
+	err := m.ModelCatalogRecorder(conversation.ModelCatalogObservation{
+		Server:     server,
+		WorkingDir: process.WorkingDir(),
+		Models:     list,
+		Complete:   true,
+		Generation: uint64(gen),
+		ObservedAt: time.Now(),
+	})
+	if err != nil && m.logger != nil {
+		m.logger.Warn("Failed to record auxiliary model catalog", "server", server, "error", err)
+	}
 }

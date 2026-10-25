@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	configPkg "github.com/inercia/mitto/internal/config"
@@ -454,6 +455,18 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		)
 	}
 
+	// Capture the previous hidden-model rules so the servers whose rules changed
+	// in this save can be re-applied to already-open sessions at the end.
+	previousHiddenModels := hiddenModelsByServer(s.config.MittoConfig)
+	// Compile a detached candidate before touching runtime configuration. The
+	// validated save path already rejects bad rules; this also makes publication
+	// all-or-nothing for internal callers of runtime apply.
+	policies := s.sessionManager.HiddenModelPolicies()
+	policySnapshot, policyErr := policies.Prepare(newACPServers)
+	if policyErr != nil {
+		return &ExternalAccessWarning{Reason: policyErr.Error(), Message: "Hidden-model policy was not applied"}
+	}
+
 	// Update ACP servers, prompts, web config, UI config, session config, and conversations config
 	if s.config.MittoConfig != nil {
 		s.config.MittoConfig.ACPServers = newACPServers
@@ -574,6 +587,30 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		s.updateHealthMonitor(settings.Web.Hooks)
 	}
 
+	// Re-apply changed hidden-model policies to live sessions. Without this, an
+	// already-open conversation keeps the model list it derived when it was
+	// (re)started, so a rule change would only take effect on the next new
+	// session or resume (mitto-69t). Runs after server renames are migrated so
+	// sessions are matched under their current server name.
+	if policies.Publish(policySnapshot) {
+		// Refresh every configured identity in the accepted snapshot. Comparing
+		// mutable Config alone is insufficient when two preparations overlap: its
+		// previous rules need not be the previously published snapshot's rules.
+		changed := make([]string, 0, len(newACPServers)+len(previousHiddenModels))
+		for _, server := range newACPServers {
+			changed = append(changed, server.Name)
+			delete(previousHiddenModels, server.Name)
+		}
+		for name := range previousHiddenModels {
+			changed = append(changed, name)
+		}
+		if n := s.sessionManager.RefilterModelPolicyForServers(changed); n > 0 && s.logger != nil {
+			s.logger.Info("Re-applied hidden-model policy to live sessions",
+				"acp_servers", changed,
+				"sessions", n)
+		}
+	}
+
 	if s.logger != nil {
 		s.logger.Info("Configuration saved",
 			"workspaces", len(newWorkspaces),
@@ -583,6 +620,40 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	}
 
 	return warning
+}
+
+// hiddenModelsByServer indexes each ACP server's effective hidden-model rules
+// by server name, for change detection across a settings save.
+func hiddenModelsByServer(cfg *configPkg.Config) map[string][]string {
+	if cfg == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(cfg.ACPServers))
+	for _, srv := range cfg.ACPServers {
+		out[srv.Name] = configPkg.NormalizeHiddenModels(srv.HiddenModels)
+	}
+	return out
+}
+
+// changedHiddenModelServers returns the names of the servers whose hidden-model
+// rules differ from the previous configuration. A server renamed in place is
+// matched against its old name, so a rename alone is not a rules change.
+func changedHiddenModelServers(previous map[string][]string, next []configPkg.ACPServer, renames map[string]string) []string {
+	var changed []string
+	for _, srv := range next {
+		prevName := srv.Name
+		for oldName, newName := range renames {
+			if newName == srv.Name {
+				prevName = oldName
+				break
+			}
+		}
+		prev, seen := previous[prevName]
+		if !seen || !slices.Equal(prev, configPkg.NormalizeHiddenModels(srv.HiddenModels)) {
+			changed = append(changed, srv.Name)
+		}
+	}
+	return changed
 }
 
 // hasValidCredentials checks if auth config has non-empty username and password.

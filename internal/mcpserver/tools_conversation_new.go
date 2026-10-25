@@ -648,6 +648,12 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		BackgroundColor:  promptTargetBackgroundColor, // Creation-time default from target.backgroundColor (mitto-8sk)
 		NoArchive:        promptTargetNoArchive,       // Creation-time, immutable, from target.noArchive (mitto-yvel.2)
 	}
+	if input.ModelTag != "" {
+		// Seed through the same startup selector as every other new conversation.
+		// Keep the request durable if the first handshake fails. ApplyModelTag
+		// below still validates this explicit pin before any work is scheduled.
+		newMeta.PendingInitialModelPreference = []config.PromptPreferredModel{{ModelTag: input.ModelTag}}
+	}
 
 	// Create the session
 	if err := store.Create(newMeta); err != nil {
@@ -717,6 +723,24 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			realSessionID,                  // parent_session_id
 			string(session.ChildOriginMCP), // child_origin
 		)
+	}
+
+	// Validate explicit model selection before bootstrapping a loop or enqueuing
+	// the initial prompt. A failed start must not silently bypass a requested pin.
+	if input.ModelTag != "" {
+		if bs == nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf("model_tag %q on new session %s could not be applied: agent did not start; resume the session and apply the model before sending work", input.ModelTag, newSessionID)
+		}
+		resolved, applyErr := bs.ApplyModelTag(ctx, input.ModelTag)
+		if applyErr != nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"model_tag %q on new session %s: %w",
+				input.ModelTag, newSessionID, applyErr)
+		}
+		s.logger.Info("Model tag applied to new conversation via MCP",
+			"session_id", newSessionID,
+			"model_tag", input.ModelTag,
+			"resolved_model_id", resolved)
 	}
 
 	// If loop configuration provided, set it up. Either an inline loop_prompt or a
@@ -859,26 +883,6 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 				runner.BootstrapOnCompletion(newSessionID)
 			}
 		}
-	}
-
-	// Implementation [tier: Coding]: model_tag pin (mitto-41o1).
-	// After loop configuration (so any loop-driven initial-model preference does
-	// not race with the explicit spawn-time pin) apply the caller-requested
-	// model_tag via the same SetConfigOption path used by the user's manual
-	// model-dropdown click. Failures here are loud: the conversation is still
-	// created and persisted, but the tool call returns an error so orchestrators
-	// see that pinning failed and can decide to retry or spawn without pinning.
-	if input.ModelTag != "" && bs != nil {
-		resolved, applyErr := bs.ApplyModelTag(ctx, input.ModelTag)
-		if applyErr != nil {
-			return nil, ConversationStartOutput{}, fmt.Errorf(
-				"model_tag %q on new session %s: %w",
-				input.ModelTag, newSessionID, applyErr)
-		}
-		s.logger.Info("Model tag applied to new conversation via MCP",
-			"session_id", newSessionID,
-			"model_tag", input.ModelTag,
-			"resolved_model_id", resolved)
 	}
 
 	// If no explicit title was provided and loop was configured, trigger title

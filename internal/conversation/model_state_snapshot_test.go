@@ -163,11 +163,12 @@ func TestAgentModelsSnapshot_ConcurrentReadersAndWriters(t *testing.T) {
 func TestAgentModelsSnapshot_RecordsOnlyRealCatalogsOutsideLock(t *testing.T) {
 	description := "agent description"
 	var calls int
-	bs := &BackgroundSession{acpServer: "agent-a"}
-	bs.onAgentModels = func(acpServer string, models []ModelInfo) error {
+	bs := &BackgroundSession{acpServer: "agent-a", workingDir: "/work/a"}
+	bs.onAgentModels = func(obs ModelCatalogObservation) error {
 		calls++
-		if acpServer != "agent-a" {
-			t.Errorf("recorded ACP server = %q, want agent-a", acpServer)
+		models := obs.Models
+		if obs.Server != "agent-a" || obs.WorkingDir != "/work/a" || !obs.Complete || obs.ObservedAt.IsZero() {
+			t.Errorf("observation = %+v, want agent-a scoped to /work/a, complete, timestamped", obs)
 		}
 		if len(models) != 1 || models[0].ModelId != "model-a" || models[0].Name != "Model A" || models[0].Description == nil || *models[0].Description != "agent description" {
 			t.Errorf("recorded catalog = %+v, want only the advertised model", models)
@@ -226,8 +227,8 @@ func TestResumeBackgroundSession_WiresOnAgentModels(t *testing.T) {
 		ACPServer:     "test-server",
 		WorkingDir:    "/tmp",
 		SharedProcess: newFakeSharedProcess(),
-		OnAgentModels: func(acpServer string, _ []ModelInfo) error {
-			gotServer = acpServer
+		OnAgentModels: func(obs ModelCatalogObservation) error {
+			gotServer = obs.Server
 			return nil
 		},
 	})

@@ -364,3 +364,33 @@ func TestResolveClosestModelWithPolicy_ExcludesHidden(t *testing.T) {
 		t.Fatalf("nil models: %q", got)
 	}
 }
+
+func TestCbApplyPendingModelMapping_HiddenModelNotSelected_U4(t *testing.T) {
+	bs, p, store := newModelMappingSession(t, "m-2")
+	bs.acpServer = "agent-b"
+	bs.mittoConfig = &config.Config{ACPServers: []config.ACPServer{
+		{Name: "agent-b", Command: "x", HiddenModels: []string{"^m-2$"}},
+	}}
+	bs.setAgentModels(modelMappingCatalog())
+	bs.waitForStartupConfigConstraints()
+
+	// The hidden closest match must not be applied: no SetSessionModel RPC,
+	// agent default kept, pending marker cleared.
+	modelTurnNoRPC(t, p.models)
+	meta, err := store.GetMetadata(bs.persistedID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if meta.BaselineModel == "m-2" {
+		t.Fatalf("hidden model m-2 became baseline")
+	}
+	if meta.BaselineModel != "m-1" {
+		t.Fatalf("baseline model = %q, want agent default %q", meta.BaselineModel, "m-1")
+	}
+	if meta.PendingModelMappingFrom != "" {
+		t.Fatalf("PendingModelMappingFrom = %q, want cleared", meta.PendingModelMappingFrom)
+	}
+	if got := bs.cmGetCurrentModelID(); got != "m-1" {
+		t.Fatalf("active model = %q, want %q", got, "m-1")
+	}
+}

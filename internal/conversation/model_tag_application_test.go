@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
@@ -116,6 +117,9 @@ func TestModelTagApplication_HiddenResolvedModelRefused(t *testing.T) {
 			r, err := bs.ApplyModelTagWithResult(context.Background(), "Coding")
 			if !errors.Is(err, errModelHiddenByPolicy) || r != (ModelTagApplyResult{}) {
 				t.Fatalf("result = %+v, %v", r, err)
+			}
+			if msg := err.Error(); msg == "" || !strings.Contains(msg, "Coding") || !strings.Contains(msg, "hidden by policy") {
+				t.Fatalf("error not user-readable: %q", msg)
 			}
 			modelTurnNoRPC(t, proc.models)
 		})
