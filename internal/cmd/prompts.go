@@ -55,7 +55,8 @@ var promptsUpdateBuiltinCmd = &cobra.Command{
 	Long: `Update the builtin prompts in MITTO_DIR/prompts/builtin/ with the
 latest versions embedded in the Mitto binary.
 
-This command will overwrite any local modifications to builtin prompts.
+This command will overwrite any local modifications to builtin prompts and
+remove retired builtin prompts and fragments from the managed builtin directory.
 After deployment it loads the complete MITTO_DIR/prompts tree using the same
 fragment-first ordering as the runtime and fails if any prompt is invalid.
 Use --dry-run to see what would be updated without making changes.
@@ -168,7 +169,7 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 
 	// Confirm before overwriting (unless --force is set)
 	if !updateBuiltinForce {
-		fmt.Println("WARNING: This will overwrite any local modifications to builtin prompts.")
+		fmt.Println("WARNING: This will overwrite local builtin modifications and remove retired builtin prompts and fragments.")
 		fmt.Print("Continue? [y/N] ")
 
 		var response string
@@ -179,10 +180,7 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Deploy with force=true to overwrite existing files. Stale-file pruning
-	// is delegated to the next EnsureBuiltinPrompts run at startup (mitto-j88.1),
-	// which is the single source of truth for prune semantics and handles nested
-	// subdirectories correctly.
+	// Deploy with force=true to overwrite existing files and retain per-file reporting.
 	result, err := embeddedconfig.DeployBuiltinPrompts(builtinDir, true)
 	if err != nil {
 		return fmt.Errorf("failed to deploy builtin prompts: %w", err)
@@ -204,6 +202,14 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nTotal: %d deployed, %d errors\n", len(result.Deployed), len(result.Errors))
+
+	// Use the startup synchronizer's canonical prune semantics now, rather than
+	// leaving retired files visible until the next app restart. This is confined
+	// to the managed builtin directory; user-installed prompts remain untouched.
+	fmt.Println("\nRemoving retired builtin prompts and fragments...")
+	if _, err := embeddedconfig.EnsureBuiltinPrompts(builtinDir); err != nil {
+		return fmt.Errorf("failed to synchronize builtin prompts: %w", err)
+	}
 
 	// Validate the files from their deployed location, not from the embedded FS.
 	// This catches partial installs and fragment/prompt mismatches before the

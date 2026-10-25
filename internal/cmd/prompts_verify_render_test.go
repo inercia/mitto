@@ -336,10 +336,25 @@ prompt: |
 }
 
 func TestRunPromptsUpdateBuiltin_VerifiesInstalledTree(t *testing.T) {
-	t.Setenv("MITTO_DIR", t.TempDir())
+	mittoDir := t.TempDir()
+	t.Setenv("MITTO_DIR", mittoDir)
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 	preserveCurrentFragments(t)
+	builtinDir := filepath.Join(mittoDir, "prompts", "builtin")
+	staleFiles := []string{
+		"beads-issues/assess.prompt.yaml",
+		"beads-issues/resolved.prompt.yaml",
+		"beads-issues/implement.prompt.yaml",
+		"retired/nested/fragment.tmpl",
+		"retired/nested/legacy.md",
+	}
+	for _, file := range staleFiles {
+		// Invalid retired files must be removed before installed-tree verification.
+		writeTreeFile(t, builtinDir, file, "{{ template \"missing\" . }}")
+	}
+	userPrompt := "name: User-owned\nprompt: Keep this prompt\n"
+	writeTreeFile(t, mittoDir, "prompts/custom.prompt.yaml", userPrompt)
 
 	oldDryRun, oldForce := updateBuiltinDryRun, updateBuiltinForce
 	updateBuiltinDryRun, updateBuiltinForce = false, true
@@ -352,6 +367,19 @@ func TestRunPromptsUpdateBuiltin_VerifiesInstalledTree(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("runPromptsUpdateBuiltin: %v", err)
+	}
+	for _, file := range staleFiles {
+		if _, err := os.Stat(filepath.Join(builtinDir, file)); !os.IsNotExist(err) {
+			t.Errorf("retired builtin %s must be removed, got %v", file, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(builtinDir, "beads-issues/status.prompt.yaml"))
+	if err != nil || !strings.Contains(string(data), "name: Check status\n") {
+		t.Errorf("current status prompt not deployed: %v", err)
+	}
+	data, err = os.ReadFile(filepath.Join(mittoDir, "prompts/custom.prompt.yaml"))
+	if err != nil || string(data) != userPrompt {
+		t.Errorf("user-owned prompt changed: %v", err)
 	}
 	for _, want := range []string{
 		"Verifying installed prompt tree...",
@@ -366,9 +394,13 @@ func TestRunPromptsUpdateBuiltin_VerifiesInstalledTree(t *testing.T) {
 }
 
 func TestRunPromptsUpdateBuiltin_DryRunSkipsInstallationVerification(t *testing.T) {
-	t.Setenv("MITTO_DIR", t.TempDir())
+	mittoDir := t.TempDir()
+	t.Setenv("MITTO_DIR", mittoDir)
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
+	staleFile := "prompts/builtin/beads-issues/assess.prompt.yaml"
+	oldContent := "name: Assess issue readiness\nprompt: Old prompt\n"
+	writeTreeFile(t, mittoDir, staleFile, oldContent)
 
 	oldDryRun, oldForce := updateBuiltinDryRun, updateBuiltinForce
 	updateBuiltinDryRun, updateBuiltinForce = true, true
@@ -387,6 +419,13 @@ func TestRunPromptsUpdateBuiltin_DryRunSkipsInstallationVerification(t *testing.
 	}
 	if !strings.Contains(output, "Dry run mode - no changes will be made.") {
 		t.Fatal("dry-run output lost its no-changes notice")
+	}
+	data, err := os.ReadFile(filepath.Join(mittoDir, staleFile))
+	if err != nil || string(data) != oldContent {
+		t.Errorf("dry run changed a retired builtin: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mittoDir, "prompts/builtin/beads-issues/status.prompt.yaml")); !os.IsNotExist(err) {
+		t.Errorf("dry run deployed a current builtin: %v", err)
 	}
 }
 
