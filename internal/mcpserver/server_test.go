@@ -5584,12 +5584,13 @@ func TestChildReportCollector_StaleTaskReport_DoesNotCompleteWait(t *testing.T) 
 	}
 }
 
-func TestChildReportCollector_MarkChildAutoCompleted_OverwritesStaleTaskReport(t *testing.T) {
-	// mitto-kn1 regression: when a child reports with a TaskID that doesn't
-	// match the active wait's task, the poll loop's markChildAutoCompleted
-	// MUST overwrite that stale report so the wait can complete. Prior to the
-	// fix, the early-return in markChildAutoCompleted made every subsequent
-	// auto-completion a no-op and parents burned the full timeout.
+func TestChildReportCollector_MarkChildAutoCompleted_SurfacesStaleTaskReport(t *testing.T) {
+	// mitto-kn1 regression, revised: when a child reports with a TaskID that
+	// doesn't match the active wait's task, the poll loop's
+	// markChildAutoCompleted MUST still unblock the wait (otherwise parents
+	// burn the full timeout). It must NOT replace the genuine report with a
+	// synthetic agent_idle result: the report is preserved, flagged as a task
+	// mismatch, and surfaced to the parent with a warning.
 	// (see internal/mcpserver/types.go markChildAutoCompleted)
 	collector := &childReportCollector{
 		parentSessionID: "parent-1",
@@ -5610,7 +5611,8 @@ func TestChildReportCollector_MarkChildAutoCompleted_OverwritesStaleTaskReport(t
 	default:
 	}
 
-	// Poll loop auto-completes the child. This MUST overwrite the stale entry.
+	// Poll loop sees the idle child. This MUST unblock the wait without
+	// discarding the genuine report.
 	collector.markChildAutoCompleted("child-a", "agent_idle")
 
 	select {
@@ -5624,11 +5626,14 @@ func TestChildReportCollector_MarkChildAutoCompleted_OverwritesStaleTaskReport(t
 	if r == nil {
 		t.Fatal("Expected report for child-a")
 	}
-	if !r.AutoCompleted {
-		t.Error("Expected report.AutoCompleted = true after markChildAutoCompleted overrode stale report")
+	if r.AutoCompleted {
+		t.Error("genuine report was replaced by a synthetic auto-completion")
 	}
-	if r.AutoReason != "agent_idle" {
-		t.Errorf("AutoReason = %q, want %q", r.AutoReason, "agent_idle")
+	if !r.TaskMismatch {
+		t.Error("Expected report.TaskMismatch = true so the parent sees the evidence")
+	}
+	if len(r.Report) == 0 {
+		t.Error("Expected the original report payload to be preserved")
 	}
 
 	pending, reported := collector.getPendingAndReported()

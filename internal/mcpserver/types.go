@@ -688,6 +688,37 @@ type childReportCollector struct {
 	// Used to detect stuck children that have been waited on for too long.
 	// Reset when task_id changes.
 	firstWaitTime map[string]time.Time // child_id -> first wait start time
+
+	// lastWaitEnd is when the previous wait cycle finished. An unscoped report
+	// (one the child filed without a task_id) is only preserved across a task
+	// change when it arrived after this instant, so a report from an earlier
+	// task cannot satisfy a new one.
+	lastWaitEnd time.Time
+}
+
+// noteWaitEnd records that a wait cycle finished, so a later task change can
+// distinguish a fresh unscoped report from a stale one.
+func (c *childReportCollector) noteWaitEnd() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastWaitEnd = time.Now()
+}
+
+// reportSurvivesTaskChange reports whether r should be kept when the parent
+// starts waiting for taskID. A report is kept when it is already filed for the
+// new task, or when it is a genuine report that carries no task_id (the child
+// was never told one) and arrived after the previous wait ended.
+func (c *childReportCollector) reportSurvivesTaskChange(r *childReport, taskID string) bool {
+	if r == nil || !r.Completed {
+		return false
+	}
+	if r.TaskID == taskID {
+		return true
+	}
+	if r.AutoCompleted || r.Failed || r.TaskMismatch {
+		return false
+	}
+	return r.TaskID == "" && r.Timestamp.After(c.lastWaitEnd)
 }
 
 // addReport stores a child's report. Any child can report at any time.
@@ -741,6 +772,15 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 	// returning false. Root cause of mitto-kn1.
 	r := c.reports[childID]
 	if r != nil && r.Completed && c.reportSatisfiesCurrentTask(r) {
+		return
+	}
+
+	// Never replace a genuine report with a synthetic idle result. A report
+	// scoped to a different task is still evidence: surface it to the parent
+	// with a task-mismatch warning instead of claiming the child never reported.
+	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed {
+		r.TaskMismatch = true
+		c.checkAndSignalWait()
 		return
 	}
 
@@ -801,14 +841,22 @@ func (c *childReportCollector) markChildFailed(childID string, msg string) {
 //   - it is non-nil and marked Completed, AND
 //   - either: no task scoping is in effect (currentTaskID == ""),
 //     OR: the report carries the matching task_id,
+//     OR: the report carries no task_id at all (the child was never told one;
+//     it cannot be scoped, and the collector already dropped stale unscoped
+//     reports when the task changed),
 //     OR: the entry was auto-completed (agent_idle / session_stopped, which carry
 //     no real task_id and must always count toward completion),
-//     OR: the entry was failed (queued-send error, which also carries no real task_id).
+//     OR: the entry was failed (queued-send error, which also carries no real task_id),
+//     OR: the entry was flagged as a task mismatch (a genuine report for another
+//     task; it must terminate the wait so the parent sees the evidence).
 func (c *childReportCollector) reportSatisfiesCurrentTask(r *childReport) bool {
 	if r == nil || !r.Completed {
 		return false
 	}
-	return c.currentTaskID == "" || r.TaskID == c.currentTaskID || r.AutoCompleted || r.Failed
+	if r.TaskID == "" && !r.AutoCompleted && !r.Failed {
+		return true
+	}
+	return c.currentTaskID == "" || r.TaskID == c.currentTaskID || r.AutoCompleted || r.Failed || r.TaskMismatch
 }
 
 // checkAndSignalWait checks if all waited-on children have reported and signals if so.
@@ -851,7 +899,7 @@ func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan
 		// (child reported with a different task_id before parent started waiting).
 		if taskID != "" {
 			for id, r := range c.reports {
-				if r != nil && r.Completed && r.TaskID != taskID {
+				if !c.reportSurvivesTaskChange(r, taskID) {
 					delete(c.reports, id)
 				}
 			}
@@ -866,8 +914,8 @@ func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan
 		oldReports := c.reports
 		c.reports = make(map[string]*childReport, len(childIDs))
 		for _, id := range childIDs {
-			if r := oldReports[id]; r != nil && r.Completed && r.TaskID == taskID {
-				c.reports[id] = r // preserve matching report
+			if r := oldReports[id]; c.reportSurvivesTaskChange(r, taskID) {
+				c.reports[id] = r // preserve matching or fresh unscoped report
 			}
 		}
 		c.currentTaskID = taskID
@@ -974,6 +1022,7 @@ type childReport struct {
 	AutoReason    string          `json:"auto_reason,omitempty"`    // reason for auto-completion
 	Failed        bool            `json:"failed,omitempty"`         // true if the queued send failed before the agent could process it
 	FailMessage   string          `json:"fail_message,omitempty"`   // error message from the failed send
+	TaskMismatch  bool            `json:"task_mismatch,omitempty"`  // true if a genuine report was filed for a different task
 }
 
 // ChildrenTasksWaitInput is the input for mitto_children_tasks_wait tool.

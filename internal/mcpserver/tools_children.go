@@ -765,6 +765,11 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				if !report.Timestamp.IsZero() {
 					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
 				}
+				if report.TaskMismatch {
+					warnings = append(warnings, fmt.Sprintf(
+						"child %s reported for a different task_id; its report is returned as completed — verify it applies before relying on it",
+						childID))
+				}
 			}
 		} else if timedOut {
 			// Add diagnostic reason for timed-out children
@@ -783,6 +788,10 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		reports[childID] = info
 	}
 	collector.mu.Unlock()
+
+	// Remember when this cycle ended so a later task change can tell a fresh
+	// unscoped report (filed without a task_id) from a stale one.
+	collector.noteWaitEnd()
 
 	// Add not-running children to reports with diagnostic reason
 	for _, childID := range notRunningChildren {

@@ -370,6 +370,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Use task_id to scope reports: when retrying the same task after a timeout, pass the same task_id " +
 			"so that reports already received are preserved. When starting a different task, use a new task_id " +
 			"to clear stale reports from the previous task. " +
+			"A report that carries no task_id is still accepted for the active wait, and a genuine report filed " +
+			"for a different task is returned as completed with a warning instead of being reported as " +
+			"agent_not_responding. " +
 			selfIDNote,
 	}, s.handleChildrenTasksWait)
 
