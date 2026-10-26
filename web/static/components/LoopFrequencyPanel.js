@@ -16,6 +16,7 @@ import { LoopPromptSelector } from "./LoopPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
+import { useLoopPlay } from "../utils/loopPlay.js";
 import {
   errorStatus,
   errorMessage as sdkErrorMessage,
@@ -227,9 +228,6 @@ export function LoopFrequencyPanel({
   // Whether the active workspace has beads (`.beads` + `bd`). Gates the "On
   // tasks" tab's visibility — a workspace without beads has nothing to fire on.
   hasBeadsWorkspace = false,
-  // Reason the loop was auto-stopped (e.g. "maxDuration", "maxIterations",
-  // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
-  stoppedReason = "",
   minDelaySeconds = MIN_COMPLETION_DELAY_SECONDS,
   onTriggerChange,
   onTriggersChange,
@@ -253,15 +251,10 @@ export function LoopFrequencyPanel({
   const [isTriggering, setIsTriggering] = useState(false);
   // Confirmation dialog state
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
-  // Restore-loop confirmation dialog state (shown when re-enabling a paused schedule)
-  const [showRestoreDialog, setShowRestoreDialog] = useState(false);
   // Dangerous-config confirmation dialog state (shown on Save for new, unbounded loops)
   const [showDangerDialog, setShowDangerDialog] = useState(false);
   // Reset timer checkbox state (default true = reset the countdown after manual run)
   const [resetTimer, setResetTimer] = useState(true);
-  // Reset counters checkbox state in the restore dialog (default true = reset the
-  // elapsed iterations + elapsed time when restoring a loop that hit its cap).
-  const [resetCounters, setResetCounters] = useState(true);
   // Error dialog state (for showing errors like "session busy")
   const [errorMessage, setErrorMessage] = useState(null);
   // Local max iterations (synced from props)
@@ -302,6 +295,8 @@ export function LoopFrequencyPanel({
   );
   // Saving enabled state (pause/resume)
   const [isSavingEnabled, setIsSavingEnabled] = useState(false);
+  const play = useLoopPlay(sessionId, onLoopEnabledChange);
+  const enabledBusy = isSavingEnabled || play.busy;
   // Tracks previous expanded value to detect collapse (for discarding staged edits)
   const prevExpandedRef = useRef(expanded);
 
@@ -832,7 +827,7 @@ export function LoopFrequencyPanel({
 
   // Handle pause/resume toggle
   const handlePauseResume = useCallback(async () => {
-    if (!sessionId || isSavingEnabled) return;
+    if (!sessionId || enabledBusy) return;
     const newEnabled = !disabled;
     setIsSavingEnabled(true);
     try {
@@ -845,59 +840,7 @@ export function LoopFrequencyPanel({
     } finally {
       setIsSavingEnabled(false);
     }
-  }, [sessionId, disabled, isSavingEnabled, onLoopEnabledChange]);
-
-  // Handle click on the play button while paused - show restore confirmation
-  const handleRestoreClick = useCallback(() => {
-    if (isSavingEnabled || !sessionId) return;
-    setShowRestoreDialog(true);
-  }, [isSavingEnabled, sessionId]);
-
-  // Handle confirmation of restoring (re-enabling) the loop schedule
-  const handleConfirmRestore = useCallback(async () => {
-    if (!sessionId) return;
-    setIsSavingEnabled(true);
-    try {
-      // When the loop was auto-stopped by a cap, optionally reset the elapsed
-      // iterations/time so it can resume instead of immediately re-stopping.
-      const limitWasStopped =
-        stoppedReason === "maxDuration" ||
-        stoppedReason === "maxIterations" ||
-        stoppedReason === "iterationSafeguard";
-      const body = { enabled: true };
-      if (limitWasStopped && resetCounters) {
-        body.reset_counters = true;
-      }
-      await getSdkClient().sessions.loop.update(sessionId, body);
-      if (onLoopEnabledChange) onLoopEnabledChange(true);
-      // mitto-5cj: after re-enabling the loop, also POST run-now so the
-      // user's play click actually fires the prompt on the FIRST click
-      // (previously they had to click play twice — once to re-arm, once
-      // to fire). Guards: skip when the loop was cap-stopped and the
-      // user did NOT tick reset_counters (the fire would immediately
-      // re-stop), and swallow the 409 "agent streaming" case silently
-      // since the loop is now enabled either way.
-      const wouldImmediatelyReStop = limitWasStopped && !resetCounters;
-      if (!wouldImmediatelyReStop) {
-        try {
-          await getSdkClient().sessions.loop.runNow(sessionId, true);
-        } catch (_runNowErr) {
-          // Non-fatal: the loop is enabled; the next tick will fire.
-        }
-      }
-      setShowRestoreDialog(false);
-    } catch (err) {
-      console.error("Failed to restore loop schedule:", err);
-      setErrorMessage("Failed to restore the loop schedule. Please try again.");
-    } finally {
-      setIsSavingEnabled(false);
-    }
-  }, [sessionId, onLoopEnabledChange, stoppedReason, resetCounters]);
-
-  // Handle cancellation of the restore confirmation dialog
-  const handleCancelRestore = useCallback(() => {
-    if (!isSavingEnabled) setShowRestoreDialog(false);
-  }, [isSavingEnabled]);
+  }, [sessionId, disabled, enabledBusy, onLoopEnabledChange]);
 
   // Panel classes - part of normal document flow (not absolute positioned).
   // overflow-visible allows the prompt-selector dropdown to escape the card boundary upward.
@@ -913,30 +856,6 @@ export function LoopFrequencyPanel({
   // been paused (e.g. the conversation disabled its own loop via MCP), the
   // play button restores the schedule and the pause button is greyed out.
   const loopPaused = !disabled;
-
-  // When the loop was auto-stopped by a cap (max-duration / max-iterations), the
-  // restore dialog offers to reset the elapsed iterations and elapsed time so the
-  // loop can actually resume (otherwise it would immediately re-stop at the cap).
-  const limitStopped =
-    stoppedReason === "maxDuration" ||
-    stoppedReason === "maxIterations" ||
-    stoppedReason === "iterationSafeguard";
-  const hasMaxDuration = (maxDurationSeconds || 0) > 0;
-  const hasMaxIterations = (maxIterations || 0) > 0;
-  // Pick a checkbox label reflecting which caps are configured.
-  let resetCountersLabel = "Reset elapsed time and iteration count";
-  if (hasMaxDuration && !hasMaxIterations) {
-    resetCountersLabel = "Reset elapsed time";
-  } else if (!hasMaxDuration && hasMaxIterations) {
-    resetCountersLabel = "Reset iteration count";
-  }
-  const stoppedReasonText =
-    stoppedReason === "maxDuration"
-      ? "maximum run time"
-      : "maximum number of iterations";
-  const restoreMessage = limitStopped
-    ? `This conversation stopped because it reached its ${stoppedReasonText}. Restore it to keep iterating.`
-    : "Do you want to restore the loop schedule for this conversation?";
 
   // Compute whether the edit-arguments button should be enabled. Prefer
   // allPrompts (full workspace list) so menu-scoped loop prompts (e.g.
@@ -980,43 +899,32 @@ export function LoopFrequencyPanel({
 
       <!-- Confirmation dialog for restoring a paused loop schedule -->
       <${ConfirmDialog}
-        isOpen=${showRestoreDialog}
-        title="Restore loop schedule"
-        message=${restoreMessage}
-        confirmLabel="Restore"
+        isOpen=${!!play.confirmation}
+        title=${play.confirmation?.title}
+        message=${play.confirmation?.message}
+        confirmLabel=${play.confirmation?.title}
         cancelLabel="Cancel"
         confirmVariant="primary"
-        isLoading=${isSavingEnabled}
-        onConfirm=${handleConfirmRestore}
-        onCancel=${handleCancelRestore}
-      >
-        ${
-          limitStopped
-            ? html`<label
-                class="flex items-center gap-2 mt-3 text-sm text-mitto-text-secondary cursor-pointer select-none"
-              >
-                <input
-                  type="checkbox"
-                  checked=${resetCounters}
-                  onInput=${(e) => setResetCounters(e.target.checked)}
-                  class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer"
-                  data-testid="reset-counters-checkbox"
-                />
-                ${resetCountersLabel}
-              </label>`
-            : null
-        }
-      </${ConfirmDialog}>
+        isLoading=${play.busy}
+        onConfirm=${play.confirm}
+        onCancel=${play.cancel}
+      />
 
       <!-- Error dialog for showing errors -->
       <${ConfirmDialog}
-        isOpen=${errorMessage !== null}
+        isOpen=${errorMessage !== null || play.error !== ""}
         title="Error"
-        message=${errorMessage || ""}
+        message=${errorMessage || play.error}
         confirmLabel="OK"
         confirmVariant="primary"
-        onConfirm=${handleCloseErrorDialog}
-        onCancel=${handleCloseErrorDialog}
+        onConfirm=${() => {
+          handleCloseErrorDialog();
+          play.clearError();
+        }}
+        onCancel=${() => {
+          handleCloseErrorDialog();
+          play.clearError();
+        }}
       />
 
       <!-- Dangerous-config warning: new, unbounded, high-frequency/on-completion -->
@@ -1042,18 +950,24 @@ export function LoopFrequencyPanel({
                restores (re-enables) the schedule when loop is paused. -->
           <button
             type="button"
-            onClick=${loopPaused ? handleRestoreClick : handleIconClick}
-            onMouseEnter=${(e) => showHeaderTip(e, loopPaused ? "Restore loop schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now")}
+            onClick=${
+              loopPaused
+                ? () => {
+                    if (!enabledBusy) return play.open();
+                  }
+                : handleIconClick
+            }
+            onMouseEnter=${(e) => showHeaderTip(e, loopPaused ? "Resume or restart loop" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now")}
             onMouseLeave=${hideHeaderTip}
             onMouseDown=${hideHeaderTip}
-            disabled=${loopPaused ? isSavingEnabled : isTriggering || isStreaming}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${(loopPaused ? isSavingEnabled : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-            data-tip=${loopPaused ? "Restore loop schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now"}
-            aria-label=${loopPaused ? "Restore loop schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now"}
+            disabled=${loopPaused ? enabledBusy : isTriggering || isStreaming}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${(loopPaused ? enabledBusy : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            data-tip=${loopPaused ? "Resume or restart loop" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now"}
+            aria-label=${loopPaused ? "Resume or restart loop" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now"}
             data-testid="loop-run-now-button"
           >
             ${
-              (loopPaused ? isSavingEnabled : isTriggering)
+              (loopPaused ? enabledBusy : isTriggering)
                 ? html`<span
                     class="loading loading-spinner w-4 h-4 text-mitto-text-secondary"
                   ></span>`
@@ -1071,14 +985,14 @@ export function LoopFrequencyPanel({
             onMouseEnter=${(e) => showHeaderTip(e, loopPaused ? "Loop runs are paused" : "Pause loop runs")}
             onMouseLeave=${hideHeaderTip}
             onMouseDown=${hideHeaderTip}
-            disabled=${loopPaused || isSavingEnabled}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${loopPaused || isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            disabled=${loopPaused || enabledBusy}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${loopPaused || enabledBusy ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
             data-tip=${loopPaused ? "Loop runs are paused" : "Pause loop runs"}
             aria-label=${loopPaused ? "Loop runs are paused" : "Pause loop runs"}
             data-testid="loop-pause-resume-button"
           >
             ${
-              !loopPaused && isSavingEnabled
+              !loopPaused && enabledBusy
                 ? html`<span
                     class="loading loading-spinner w-4 h-4 text-mitto-text-secondary"
                   ></span>`

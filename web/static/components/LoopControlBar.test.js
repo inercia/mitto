@@ -22,9 +22,10 @@ describe("LoopControlBar", () => {
     expect(barJs).toMatch(
       /sessions\.loop\.update\(sessionId, \{ enabled: false \}\)/,
     );
-    expect(barJs).toMatch(/const patch = \{ enabled: true \}/);
-    expect(barJs).toMatch(/sessions\.loop\.runNow\(sessionId, true\)/);
-    expect(barJs).toMatch(/busy === "pause" \|\| busy === "restore"/);
+    expect(barJs).toMatch(/useLoopPlay\(sessionId, onLoopEnabledChange\)/);
+    expect(barJs).toMatch(/play\.open\(\)/);
+    expect(barJs).toMatch(/onConfirm=\$\{play\.confirm\}/);
+    expect(barJs).toMatch(/busy === "pause" \|\| play\.busy/);
   });
 
   test("retains message-input and settings actions", () => {
@@ -32,9 +33,9 @@ describe("LoopControlBar", () => {
     expect(barJs).toMatch(/data-testid="loop-open-settings"/);
   });
 
-  test("preserves the cap-stop reset behavior when restoring", () => {
-    expect(barJs).toMatch(/"maxDuration"/);
-    expect(barJs).toMatch(/"maxIterations"/);
-    expect(barJs).toMatch(/patch\.reset_counters = true/);
+  test("renders the shared authoritative confirmation instead of reason-based reset", () => {
+    expect(barJs).toMatch(/title=\$\{play\.confirmation\?\.title\}/);
+    expect(barJs).toMatch(/message=\$\{play\.confirmation\?\.message\}/);
+    expect(barJs).not.toMatch(/CAP_STOP_REASONS|stoppedReason|reset_counters/);
   });
 });

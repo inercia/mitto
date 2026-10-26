@@ -11,32 +11,23 @@ import {
 } from "./Icons.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { getSdkClient } from "../utils/sdkClient.js";
-
-const CAP_STOP_REASONS = new Set([
-  "maxDuration",
-  "maxIterations",
-  "iterationSafeguard",
-]);
+import { useLoopPlay } from "../utils/loopPlay.js";
 
 export function LoopControlBar({
   isOpen,
   sessionId,
   enabled = false,
-  stoppedReason = "",
-  maxDurationSeconds = 0,
-  maxIterations = 0,
   isPromptAreaVisible = false,
   onTogglePromptArea,
   onLoopEnabledChange,
   onOpenSettings,
 }) {
-  const [dialog, setDialog] = useState("");
   const [busy, setBusy] = useState("");
-  const [resetCounters, setResetCounters] = useState(true);
   const [error, setError] = useState("");
+  const play = useLoopPlay(sessionId, onLoopEnabledChange);
 
   const pause = useCallback(async () => {
-    if (!sessionId || busy || !enabled) return;
+    if (!sessionId || busy || play.busy || !enabled) return;
     setBusy("pause");
     try {
       await getSdkClient().sessions.loop.update(sessionId, { enabled: false });
@@ -46,42 +37,10 @@ export function LoopControlBar({
     } finally {
       setBusy("");
     }
-  }, [sessionId, busy, enabled, onLoopEnabledChange]);
-
-  const restore = useCallback(async () => {
-    if (!sessionId || busy) return;
-    setBusy("restore");
-    const limitStopped = CAP_STOP_REASONS.has(stoppedReason);
-    try {
-      const patch = { enabled: true };
-      if (limitStopped && resetCounters) patch.reset_counters = true;
-      await getSdkClient().sessions.loop.update(sessionId, patch);
-      onLoopEnabledChange?.(true);
-      if (!(limitStopped && !resetCounters)) {
-        try {
-          await getSdkClient().sessions.loop.runNow(sessionId, true);
-        } catch (_err) {
-          // Restoring succeeded; a busy agent can run the enabled loop later.
-        }
-      }
-      setDialog("");
-    } catch (_err) {
-      setDialog("");
-      setError("Failed to restore the loop schedule. Please try again.");
-    } finally {
-      setBusy("");
-    }
-  }, [sessionId, busy, stoppedReason, resetCounters, onLoopEnabledChange]);
+  }, [sessionId, busy, play.busy, enabled, onLoopEnabledChange]);
 
   if (!isOpen) return null;
 
-  const limitStopped = CAP_STOP_REASONS.has(stoppedReason);
-  const resetLabel =
-    maxDurationSeconds > 0 && maxIterations > 0
-      ? "Reset elapsed time and iteration count"
-      : maxDurationSeconds > 0
-        ? "Reset elapsed time"
-        : "Reset iteration count";
   const controlClass =
     "btn btn-sm btn-square btn-ghost border border-mitto-border-2";
 
@@ -100,21 +59,20 @@ export function LoopControlBar({
         <button
           type="button"
           class=${controlClass}
-          disabled=${busy !== ""}
+          disabled=${busy !== "" || play.busy}
           onClick=${() => {
             if (enabled) {
               pause();
             } else {
-              setResetCounters(true);
-              setDialog("restore");
+              play.open();
             }
           }}
-          title=${enabled ? "Pause loop runs" : "Restore loop schedule"}
-          aria-label=${enabled ? "Pause loop runs" : "Restore loop schedule"}
+          title=${enabled ? "Pause loop runs" : "Resume or restart loop"}
+          aria-label=${enabled ? "Pause loop runs" : "Resume or restart loop"}
           data-testid="loop-pause-resume-button"
         >
           ${
-            busy === "pause" || busy === "restore"
+            busy === "pause" || play.busy
               ? html`<span class="loading loading-spinner loading-xs"></span>`
               : enabled
                 ? html`<${PauseFilledIcon} className="w-4 h-4" />`
@@ -153,41 +111,28 @@ export function LoopControlBar({
       </div>
 
       <${ConfirmDialog}
-        isOpen=${dialog === "restore"}
-        title="Restore loop schedule"
-        message=${
-          limitStopped
-            ? "This loop stopped after reaching a configured safety limit. Restore it to keep iterating."
-            : "Restore this loop and run its prompt now?"
-        }
-        confirmLabel="Restore"
-        isLoading=${busy === "restore"}
-        onConfirm=${restore}
-        onCancel=${() => !busy && setDialog("")}
-      >
-        ${
-          limitStopped &&
-          html`
-            <label class="label cursor-pointer justify-start gap-3">
-              <input
-                type="checkbox"
-                class="checkbox checkbox-sm"
-                checked=${resetCounters}
-                onChange=${(event) => setResetCounters(event.target.checked)}
-              />
-              ${resetLabel}
-            </label>
-          `
-        }
-      </${ConfirmDialog}>
+        isOpen=${!!play.confirmation}
+        title=${play.confirmation?.title}
+        message=${play.confirmation?.message}
+        confirmLabel=${play.confirmation?.title}
+        isLoading=${play.busy}
+        onConfirm=${play.confirm}
+        onCancel=${play.cancel}
+      />
 
       <${ConfirmDialog}
-        isOpen=${error !== ""}
+        isOpen=${error !== "" || play.error !== ""}
         title="Error"
-        message=${error}
+        message=${error || play.error}
         confirmLabel="OK"
-        onConfirm=${() => setError("")}
-        onCancel=${() => setError("")}
+        onConfirm=${() => {
+          setError("");
+          play.clearError();
+        }}
+        onCancel=${() => {
+          setError("");
+          play.clearError();
+        }}
       />
     </${Fragment}>
   `;
