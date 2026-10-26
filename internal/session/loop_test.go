@@ -1,14 +1,441 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestLoopStore_LifecycleSharedOwnership(t *testing.T) {
+	dir := t.TempDir()
+	a := NewLoopStore(dir)
+	b := newLoopStoreWithObserver(filepath.Join(dir, "unused", ".."), "session", nil)
+	if a.mu != b.mu {
+		t.Fatal("constructors must share directory lock ownership")
+	}
+	if a.mu == NewLoopStore(t.TempDir()).mu {
+		t.Fatal("different directories must have independent locks")
+	}
+	if err := a.Set(&LoopPrompt{Prompt: "iterate", Trigger: TriggerOnCompletion, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	const writers = 24
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	for range writers {
+		go func() {
+			ps := NewLoopStore(dir)
+			<-start
+			errs <- ps.RecordSentForGeneration(0, true)
+		}()
+	}
+	close(start)
+	for range writers {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := a.Get()
+	if err != nil || p.IterationCount != writers {
+		t.Fatalf("cross-handle accounting lost updates: %+v, %v", p, err)
+	}
+	// Deletion must not evict a lock while existing handles remain live.
+	if err := a.Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if a.mu != NewLoopStore(dir).mu {
+		t.Fatal("lock ownership changed after delete")
+	}
+}
+
+func TestLoopStore_LifecycleResumeAndRestart(t *testing.T) {
+	now := time.Date(2026, 10, 26, 8, 0, 0, 0, time.UTC)
+	anchor := now.Add(-time.Minute)
+	enabled := true
+	for _, tc := range []struct {
+		name      string
+		count     int
+		promptCap int
+		effective int
+		duration  int
+		reason    StoppedReason
+	}{
+		{"remaining", 2, 10, 10, 120, ""},
+		{"duration-boundary", 2, 10, 10, 60, StoppedReasonMaxDuration},
+		{"iterations", 10, 10, 10, 120, StoppedReasonMaxIterations},
+		{"configured-safeguard", 5, 10, 5, 120, StoppedReasonIterationSafeguard},
+		{"global-safeguard", 5, 0, 5, 120, StoppedReasonIterationSafeguard},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ps := NewLoopStore(t.TempDir())
+			p := &LoopPrompt{
+				Prompt: "iterate", Trigger: TriggerOnCompletion, DelaySeconds: 15,
+				MaxIterations: tc.promptCap, IterationCount: tc.count,
+				MaxDurationSeconds: tc.duration, FirstRunAt: &anchor, LastSentAt: &anchor,
+				StoppedReason: StoppedReasonDisabledByAgent, StoppedAt: &anchor,
+				AcknowledgedStoppedReason: StoppedReasonDisabledByAgent,
+				Arguments:                 map[string]string{"task": "preserve"},
+				unknownFields:             map[string]json.RawMessage{"future_field": json.RawMessage(`{"keep":true}`)},
+			}
+			// RestoreSnapshot seeds accumulated state without Set's preservation rules.
+			if err := ps.RestoreSnapshot(p); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := os.ReadFile(ps.loopPath())
+			lifecycle := LoopLifecycleUpdate{EffectiveMaxIterations: func(int) int { return tc.effective }, Now: now}
+			resumed, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled}, lifecycle)
+			if tc.reason != "" {
+				if !errors.Is(err, ErrLoopRestartRequired) || !strings.Contains(err.Error(), string(tc.reason)) {
+					t.Fatalf("resume error = %v, want restart required (%s)", err, tc.reason)
+				}
+				after, _ := os.ReadFile(ps.loopPath())
+				if string(before) != string(after) {
+					t.Fatal("rejected resume wrote partial state")
+				}
+			} else if err != nil || resumed.IterationCount != tc.count || !resumed.FirstRunAt.Equal(anchor) || resumed.PendingRestart || resumed.LifecycleGeneration != 0 {
+				t.Fatalf("ordinary resume renewed allowance: %+v, %v", resumed, err)
+			}
+			lifecycle.ResetCounters = true
+			restarted, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled}, lifecycle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !restarted.Enabled || restarted.IterationCount != 0 || restarted.FirstRunAt != nil || restarted.LastSentAt != nil || restarted.NextScheduledAt != nil || restarted.StoppedReason != "" || restarted.StoppedAt != nil || restarted.AcknowledgedStoppedReason != "" || restarted.LifecycleGeneration != 1 || !restarted.PendingRestart {
+				t.Fatalf("incomplete atomic restart: %+v", restarted)
+			}
+			var future map[string]bool
+			if err := json.Unmarshal(restarted.unknownFields["future_field"], &future); err != nil {
+				t.Fatal(err)
+			}
+			if restarted.MaxIterations != tc.promptCap || restarted.MaxDurationSeconds != tc.duration || restarted.DelaySeconds != 15 || restarted.Arguments["task"] != "preserve" || !future["keep"] {
+				t.Fatalf("restart changed configuration: %+v", restarted)
+			}
+		})
+	}
+	// Paused time keeps elapsing: a confirmation captured before expiry is not authority.
+	ps := NewLoopStore(t.TempDir())
+	if err := ps.RestoreSnapshot(&LoopPrompt{Prompt: "iterate", Trigger: TriggerOnCompletion, MaxDurationSeconds: 60, FirstRunAt: &anchor}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := ps.Get()
+	if p.ExhaustedReason(now.Add(-time.Second), 10) != "" {
+		t.Fatal("fixture must have remaining time at confirmation")
+	}
+	if _, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled}, LoopLifecycleUpdate{EffectiveMaxIterations: func(int) int { return 10 }, Now: now}); !errors.Is(err, ErrLoopRestartRequired) {
+		t.Fatalf("stale resume = %v", err)
+	}
+}
+
+func TestLoopStore_LifecycleScheduleAndValidation(t *testing.T) {
+	ps := NewLoopStore(t.TempDir())
+	now := time.Date(2026, 10, 26, 8, 0, 0, 0, time.UTC)
+	enabled := true
+	if err := ps.Set(&LoopPrompt{Prompt: "iterate", Frequency: Frequency{Value: 1, Unit: FrequencyHours}}); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := LoopLifecycleUpdate{ResetCounters: true, Now: now}
+	p, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled}, lifecycle)
+	if err != nil || p.NextScheduledAt == nil || !p.NextScheduledAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("first-run schedule = %+v, %v", p, err)
+	}
+	before, _ := os.ReadFile(ps.loopPath())
+	invalid := -1
+	if _, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled, MaxIterations: &invalid}, lifecycle); !errors.Is(err, ErrInvalidMaxIterations) {
+		t.Fatalf("invalid restart = %v", err)
+	}
+	after, _ := os.ReadFile(ps.loopPath())
+	if string(before) != string(after) {
+		t.Fatal("invalid restart changed persisted state")
+	}
+	// A failed atomic write must not allocate a generation or expose enable/reset.
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(ps.sessionDir, 0500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(ps.sessionDir, 0700) })
+		if _, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled}, lifecycle); err == nil {
+			t.Fatal("expected persistence failure in read-only directory")
+		}
+		after, _ = os.ReadFile(ps.loopPath())
+		if string(before) != string(after) {
+			t.Fatal("failed write changed persisted state")
+		}
+	}
+}
+
+func TestLoopStore_LifecycleAtomicVisibility(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+	anchor := time.Date(2026, 10, 26, 7, 0, 0, 0, time.UTC)
+	if err := ps.RestoreSnapshot(&LoopPrompt{Prompt: "iterate", Trigger: TriggerOnCompletion,
+		IterationCount: 10, FirstRunAt: &anchor, LastSentAt: &anchor,
+		MaxIterations: 10, StoppedReason: StoppedReasonMaxIterations}); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan *LoopPrompt, 24)
+	errs := make(chan error, 24)
+	for range 24 {
+		go func() {
+			<-start
+			p, err := NewLoopStore(dir).Get()
+			results <- p
+			errs <- err
+		}()
+	}
+	close(start)
+	enabled := true
+	if _, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled}, LoopLifecycleUpdate{ResetCounters: true}); err != nil {
+		t.Fatal(err)
+	}
+	for range 24 {
+		p := <-results
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		old := !p.Enabled && p.LifecycleGeneration == 0 && p.IterationCount == 10 && p.FirstRunAt != nil && p.LastSentAt != nil && p.StoppedReason == StoppedReasonMaxIterations && !p.PendingRestart
+		fresh := p.Enabled && p.LifecycleGeneration == 1 && p.IterationCount == 0 && p.FirstRunAt == nil && p.LastSentAt == nil && p.StoppedReason == "" && p.PendingRestart
+		if !old && !fresh {
+			t.Fatalf("reader observed half-transition: %+v", p)
+		}
+	}
+}
+
+func TestLoopStore_LifecyclePolicyUsesLockedProposedState(t *testing.T) {
+	ps := NewLoopStore(t.TempDir())
+	if err := ps.Set(&LoopPrompt{Prompt: "iterate", Trigger: TriggerOnCompletion}); err != nil {
+		t.Fatal(err)
+	}
+	enabled, cap := true, 20
+	called := false
+	_, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled, MaxIterations: &cap}, LoopLifecycleUpdate{
+		EffectiveMaxIterations: func(promptMax int) int {
+			called = true
+			if promptMax != cap {
+				t.Errorf("policy saw stale cap %d, want %d", promptMax, cap)
+			}
+			return 10 // Caller supplies captured config policy, with no nested locks.
+		},
+	})
+	if err != nil || !called {
+		t.Fatalf("policy resolution: called=%v, error=%v", called, err)
+	}
+	before, _ := os.ReadFile(ps.loopPath())
+	if _, err := ps.UpdateLifecycle(LoopUpdate{Enabled: &enabled}, LoopLifecycleUpdate{}); err == nil {
+		t.Fatal("resume without effective safeguard policy must fail closed")
+	}
+	after, _ := os.ReadFile(ps.loopPath())
+	if string(before) != string(after) {
+		t.Fatal("missing policy partially enabled loop")
+	}
+}
+
+func TestLoopStore_LifecycleSameGenerationStops(t *testing.T) {
+	for _, reason := range []StoppedReason{StoppedReasonPausedByUser, StoppedReasonDisabledByAgent, StoppedReasonArchived, StoppedReasonMaxDuration} {
+		t.Run(string(reason), func(t *testing.T) {
+			ps := NewLoopStore(t.TempDir())
+			if err := ps.Set(&LoopPrompt{Prompt: "iterate", Trigger: TriggerOnCompletion, Enabled: true}); err != nil {
+				t.Fatal(err)
+			}
+			if err := ps.MarkStoppedForGeneration(0, reason); err != nil {
+				t.Fatal(err)
+			}
+			err := ps.RecordSentForGeneration(0, true)
+			if isBenignStopReason(reason) && err != nil || !isBenignStopReason(reason) && !errors.Is(err, ErrRecordSentOnStoppedLoop) {
+				t.Fatalf("same-generation accounting error = %v", err)
+			}
+			p, _ := ps.Get()
+			if p.Enabled || p.StoppedReason != reason || p.IterationCount != 1 || p.FirstRunAt == nil || p.NextScheduledAt != nil {
+				t.Fatalf("same-generation stop semantics changed: %+v", p)
+			}
+		})
+	}
+}
+
+func TestLoopStore_LifecycleFencing(t *testing.T) {
+	for _, concurrent := range []bool{false, true} {
+		name := "after-reset"
+		if concurrent {
+			name = "racing-reset"
+		}
+		t.Run(name, func(t *testing.T) {
+			for range 20 {
+				dir := t.TempDir()
+				ps := NewLoopStore(dir)
+				if err := ps.Set(&LoopPrompt{Prompt: "iterate", Frequency: Frequency{Value: 1, Unit: FrequencyHours}, Enabled: true}); err != nil {
+					t.Fatal(err)
+				}
+				mutations := []func(*LoopStore) error{
+					func(s *LoopStore) error { return s.RecordSentForGeneration(0, true) },
+					func(s *LoopStore) error { return s.RecordSentForGeneration(0, false) },
+					func(s *LoopStore) error { return s.MarkStoppedForGeneration(0, StoppedReasonMaxDuration) },
+					func(s *LoopStore) error { return s.MarkStoppedForGeneration(0, StoppedReasonMaxIterations) },
+					func(s *LoopStore) error { return s.MarkStoppedForGeneration(0, StoppedReasonDeliveryFailures) },
+					func(s *LoopStore) error { return s.DeferNextScheduleForGeneration(0, time.Hour) },
+					func(s *LoopStore) error { return s.AcknowledgeRestartForGeneration(0) },
+				}
+				now := time.Date(2026, 10, 26, 8, 0, 0, 0, time.UTC)
+				restart := func() error {
+					enabled := true
+					_, err := NewLoopStore(dir).UpdateLifecycle(LoopUpdate{Enabled: &enabled}, LoopLifecycleUpdate{ResetCounters: true, Now: now})
+					return err
+				}
+				if !concurrent {
+					if err := restart(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				start := make(chan struct{})
+				errs := make(chan error, len(mutations))
+				for _, mutate := range mutations {
+					go func() {
+						<-start
+						errs <- mutate(NewLoopStore(dir))
+					}()
+				}
+				close(start)
+				if concurrent {
+					if err := restart(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for range mutations {
+					err := <-errs
+					if !concurrent && !errors.Is(err, ErrLoopGenerationMismatch) {
+						t.Fatalf("stale mutation = %v, want generation mismatch", err)
+					}
+					if concurrent && err != nil && !errors.Is(err, ErrLoopGenerationMismatch) && !errors.Is(err, ErrRecordSentOnStoppedLoop) {
+						t.Fatal(err)
+					}
+				}
+				p, err := ps.Get()
+				if err != nil || !p.Enabled || p.LifecycleGeneration != 1 || !p.PendingRestart || p.IterationCount != 0 || p.FirstRunAt != nil || p.LastSentAt != nil || p.StoppedReason != "" || p.NextScheduledAt == nil || !p.NextScheduledAt.Equal(now.Add(time.Hour)) {
+					t.Fatalf("old callback changed new lifecycle: %+v, %v", p, err)
+				}
+			}
+		})
+	}
+}
+
+func TestLoopStore_LifecyclePendingPersistence(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+	if err := ps.Set(&LoopPrompt{Prompt: "iterate", Trigger: TriggerOnCompletion, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := ps.Get()
+	if p.LifecycleGeneration != 0 || p.PendingRestart {
+		t.Fatal("legacy lifecycle defaults changed")
+	}
+	if err := ps.ResetCounters(); err != nil {
+		t.Fatal(err)
+	}
+	// A new handle simulates reloading persisted state. No dispatch/acceptance
+	// mutation consumes the notice; failure backoff must retain it too.
+	reloaded := NewLoopStore(dir)
+	if err := reloaded.DeferNextScheduleForGeneration(1, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = reloaded.Get()
+	if p.LifecycleGeneration != 1 || !p.PendingRestart {
+		t.Fatalf("lost pending context on reload/failure: %+v", p)
+	}
+	// Replacement config preserves lifecycle ownership, just like counters.
+	if err := reloaded.Set(&LoopPrompt{Prompt: "new prompt", Trigger: TriggerOnCompletion, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = reloaded.Get()
+	if p.LifecycleGeneration != 1 || !p.PendingRestart {
+		t.Fatal("Set discarded lifecycle metadata")
+	}
+	if err := reloaded.RecordSentForGeneration(1, false); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = reloaded.Get()
+	if p.IterationCount != 0 || p.FirstRunAt == nil || !p.PendingRestart {
+		t.Fatal("non-counted delivery changed accounting/context contract")
+	}
+	if err := reloaded.AcknowledgeRestartForGeneration(1); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(ps.loopPath())
+	if err := reloaded.AcknowledgeRestartForGeneration(1); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(ps.loopPath())
+	if string(before) != string(after) {
+		t.Fatal("repeated acknowledgment wrote state")
+	}
+	p, _ = ps.Get()
+	if p.PendingRestart {
+		t.Fatal("successful acknowledgment did not persist")
+	}
+	if err := ps.ResetCounters(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.AcknowledgeRestartForGeneration(1); !errors.Is(err, ErrLoopGenerationMismatch) {
+		t.Fatalf("old acknowledgment = %v", err)
+	}
+	p, _ = ps.Get()
+	if p.LifecycleGeneration != 2 || !p.PendingRestart {
+		t.Fatal("old acknowledgment consumed new pending notice")
+	}
+}
+
+func TestLoopStore_LifecycleCapProvenance(t *testing.T) {
+	for _, capReason := range []StoppedReason{StoppedReasonMaxDuration, StoppedReasonMaxIterations, StoppedReasonIterationSafeguard} {
+		t.Run(string(capReason), func(t *testing.T) {
+			dir := t.TempDir()
+			calls := 0
+			ps := newLoopStoreWithObserver(dir, "session", func(_ string, _ StoppedReason) {
+				// Reenter through a different handle: observers must run unlocked.
+				if _, err := NewLoopStore(dir).Get(); err != nil {
+					t.Error(err)
+				}
+				calls++
+			})
+			if err := ps.Set(&LoopPrompt{Prompt: "iterate", Trigger: TriggerOnCompletion, Enabled: true}); err != nil {
+				t.Fatal(err)
+			}
+			if err := ps.MarkStoppedForGeneration(0, capReason); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := ps.AcknowledgeStoppedReason(); err != nil {
+				t.Fatal(err)
+			}
+			for _, reason := range []StoppedReason{StoppedReasonDisabledByAgent, StoppedReasonPausedByUser} {
+				// Match the existing MCP/HTTP ordering: Update(false), then stop.
+				disabled := false
+				if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+					t.Fatal(err)
+				}
+				before, _ := ps.Get()
+				if err := ps.MarkStopped(reason); err != nil {
+					t.Fatal(err)
+				}
+				after, _ := ps.Get()
+				if !reflect.DeepEqual(before, after) || calls != 1 {
+					t.Fatalf("redundant disable erased provenance/notified: %+v, calls=%d", after, calls)
+				}
+			}
+			for _, reason := range []StoppedReason{StoppedReasonArchived, StoppedReasonDeliveryFailures} {
+				if err := ps.MarkStoppedForGeneration(0, reason); err != nil {
+					t.Fatal(err)
+				}
+				p, _ := ps.Get()
+				if p.StoppedReason != reason || p.AcknowledgedStoppedReason != "" || calls != 1 {
+					t.Fatalf("meaningful reason transition changed: %+v, calls=%d", p, calls)
+				}
+			}
+		})
+	}
+}
 
 func TestFrequency_Validate(t *testing.T) {
 	tests := []struct {

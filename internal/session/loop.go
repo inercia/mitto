@@ -111,6 +111,11 @@ func IsTransientAutoStopReason(reason StoppedReason) bool {
 }
 
 var (
+	// ErrLoopGenerationMismatch means an asynchronous mutation belongs to an old
+	// allowance. No write (or stopped notification) took place.
+	ErrLoopGenerationMismatch = errors.New("loop lifecycle generation changed")
+	// ErrLoopRestartRequired requires explicit user authorization to reset budgets.
+	ErrLoopRestartRequired = errors.New("loop allowance exhausted: confirm restart with fresh limits")
 	// ErrLoopNotFound is returned when no loop prompt is configured.
 	ErrLoopNotFound = errors.New("loop prompt not found")
 	// ErrInvalidFrequency is returned when the frequency configuration is invalid.
@@ -319,6 +324,12 @@ type LoopPrompt struct {
 	MaxIterations int `json:"max_iterations,omitempty"`
 	// IterationCount is the number of scheduled runs delivered so far.
 	IterationCount int `json:"iteration_count"`
+	// LifecycleGeneration fences callbacks captured before a budget reset. Legacy
+	// records start at zero; every explicit reset advances it.
+	LifecycleGeneration uint64 `json:"lifecycle_generation,omitempty"`
+	// PendingRestart remains set until a successful same-generation delivery is
+	// acknowledged. Dispatch acceptance alone must not consume this durable notice.
+	PendingRestart bool `json:"pending_restart,omitempty"`
 	// CreatedAt is when the loop prompt was created.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt is when the loop prompt was last modified.
@@ -423,7 +434,8 @@ var loopPromptKnownJSONFields = map[string]bool{
 	"condition_preset": true, "cooldown_seconds": true,
 	"coalesce_during_busy": true, "run_on_start": true,
 	"settle_window_seconds": true, "child_events": true,
-	"slack_subscriptions": true,
+	"slack_subscriptions":  true,
+	"lifecycle_generation": true, "pending_restart": true,
 }
 
 // UnmarshalJSON preserves unknown top-level fields so a newer loop.json is not
@@ -792,7 +804,7 @@ func (p *LoopPrompt) validate(preserveUnknownTriggers bool) error {
 // It is safe for concurrent use.
 type LoopStore struct {
 	sessionDir string
-	mu         sync.RWMutex
+	mu         *sync.RWMutex
 
 	// sessionID and stoppedObserver, when both set, let MarkStopped notify a
 	// listener (the LoopRunner, via Store.SetLoopStoppedObserver) once a loop
@@ -806,10 +818,34 @@ type LoopStore struct {
 	stoppedObserver func(sessionID string, reason StoppedReason)
 }
 
+var loopLocksMu sync.Mutex
+var loopLocks = make(map[string]*sync.RWMutex)
+
+// loopLockFor shares read/modify/write ownership across all handles, including
+// Store.Loop dispensers. Like Queue, paths are cleaned; absolute keys also unify
+// relative and absolute spellings. Locks are deliberately retained: eviction
+// while an older handle is live would create two owners for the same directory.
+// This is process-local coordination, not cross-process filesystem locking.
+func loopLockFor(sessionDir string) *sync.RWMutex {
+	key, err := filepath.Abs(sessionDir)
+	if err != nil {
+		key = filepath.Clean(sessionDir)
+	}
+	loopLocksMu.Lock()
+	defer loopLocksMu.Unlock()
+	mu := loopLocks[key]
+	if mu == nil {
+		mu = &sync.RWMutex{}
+		loopLocks[key] = mu
+	}
+	return mu
+}
+
 // NewLoopStore creates a new LoopStore for the given session directory.
 func NewLoopStore(sessionDir string) *LoopStore {
 	return &LoopStore{
 		sessionDir: sessionDir,
+		mu:         loopLockFor(sessionDir),
 	}
 }
 
@@ -820,6 +856,7 @@ func NewLoopStore(sessionDir string) *LoopStore {
 func newLoopStoreWithObserver(sessionDir, sessionID string, obs func(sessionID string, reason StoppedReason)) *LoopStore {
 	return &LoopStore{
 		sessionDir:      sessionDir,
+		mu:              loopLockFor(sessionDir),
 		sessionID:       sessionID,
 		stoppedObserver: obs,
 	}
@@ -870,6 +907,8 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 		p.LastSentAt = existing.LastSentAt
 		p.IterationCount = existing.IterationCount
 		p.FirstRunAt = existing.FirstRunAt
+		p.LifecycleGeneration = existing.LifecycleGeneration
+		p.PendingRestart = existing.PendingRestart
 
 		// Sticky auto-stop (mitto-uun): once a loop has been MarkStopped'd (e.g. after
 		// reaching its max-iterations or max-duration cap), a subsequent Set() that
@@ -959,12 +998,51 @@ type LoopUpdate struct {
 // Only non-nil fields in u are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
 func (ps *LoopStore) Update(u LoopUpdate) error {
+	_, err := ps.update(u, nil)
+	return err
+}
+
+// LoopLifecycleUpdate is explicit lifecycle intent, separate from ordinary
+// configuration updates. EffectiveMaxIterations resolves the caller's policy for
+// the proposed MaxIterations under the store lock. It must be pure/nonblocking:
+// capture config values beforehand, never acquire runner/store locks inside it.
+// This avoids both stale per-prompt policy and an opposing lock order without
+// importing config into session. Now defaults to current UTC time when zero.
+type LoopLifecycleUpdate struct {
+	ResetCounters          bool
+	EffectiveMaxIterations func(promptMax int) int
+	Now                    time.Time
+}
+
+// UpdateLifecycle validates resume against authoritative counters/time and
+// persists explicit reset + enable as one transaction. Reset false never renews
+// an allowance. Existing Update callers retain their semantics until integrated.
+func (ps *LoopStore) UpdateLifecycle(u LoopUpdate, lifecycle LoopLifecycleUpdate) (*LoopPrompt, error) {
+	return ps.update(u, &lifecycle)
+}
+
+// ExhaustedReason evaluates persisted allowance, not display provenance. The
+// effective cap is supplied by the policy owner; zero means no effective cap.
+func (p *LoopPrompt) ExhaustedReason(now time.Time, effectiveMaxIterations int) StoppedReason {
+	if p.ReachedMaxDuration(now) {
+		return StoppedReasonMaxDuration
+	}
+	if p.ReachedMaxIterations() {
+		return StoppedReasonMaxIterations
+	}
+	if effectiveMaxIterations > 0 && p.IterationCount >= effectiveMaxIterations {
+		return StoppedReasonIterationSafeguard
+	}
+	return ""
+}
+
+func (ps *LoopStore) update(u LoopUpdate, lifecycle *LoopLifecycleUpdate) (*LoopPrompt, error) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
 	existing, err := ps.getUnlocked()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if u.Prompt != nil {
@@ -1041,16 +1119,38 @@ func (ps *LoopStore) Update(u LoopUpdate) error {
 	// written by a newer Mitto version. Explicit trigger replacement remains
 	// strict and rejects values this binary cannot execute.
 	if err := existing.validate(u.Triggers == nil); err != nil {
-		return err
+		return nil, err
 	}
 
-	existing.UpdatedAt = time.Now().UTC()
-	existing.NextScheduledAt = ps.computeNextScheduledTime(existing)
+	now := time.Now().UTC()
+	if lifecycle != nil {
+		if !lifecycle.Now.IsZero() {
+			now = lifecycle.Now.UTC()
+		}
+		if lifecycle.ResetCounters {
+			if err := existing.resetAllowance(); err != nil {
+				return nil, err
+			}
+		} else if u.Enabled != nil && *u.Enabled {
+			if lifecycle.EffectiveMaxIterations == nil {
+				return nil, errors.New("effective iteration policy required to resume loop")
+			}
+			effective := lifecycle.EffectiveMaxIterations(existing.MaxIterations)
+			if effective <= 0 {
+				return nil, ErrInvalidMaxIterations
+			}
+			if reason := existing.ExhaustedReason(now, effective); reason != "" {
+				return nil, fmt.Errorf("%w (%s)", ErrLoopRestartRequired, reason)
+			}
+		}
+	}
+	existing.UpdatedAt = now
+	existing.NextScheduledAt = ps.computeNextScheduledTimeAt(existing, now)
 
 	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
-		return fmt.Errorf("failed to write loop file: %w", err)
+		return nil, fmt.Errorf("failed to write loop file: %w", err)
 	}
-	return nil
+	return existing, nil
 }
 
 // RemoveSlackSubscriptions removes subscriptions for the given installations.
@@ -1199,7 +1299,9 @@ func (ps *LoopStore) ClearSaved() error {
 // its first run immediately (no delay_seconds wait — the delay is a between-runs
 // gap, not a pre-first-run delay) rather than waiting out the configured delay. It
 // does not change Enabled or the prompt configuration; re-enabling is handled
-// separately by Update.
+// separately by Update. Like every explicit reset, it advances lifecycle
+// generation and marks restart context pending. Play should use UpdateLifecycle
+// to combine reset and enable in one transaction instead of two writes.
 func (ps *LoopStore) ResetCounters() error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -1209,14 +1311,26 @@ func (ps *LoopStore) ResetCounters() error {
 		return err
 	}
 
-	existing.IterationCount = 0
-	existing.FirstRunAt = nil
-	existing.LastSentAt = nil
+	if err := existing.resetAllowance(); err != nil {
+		return err
+	}
 	existing.UpdatedAt = time.Now().UTC()
 
 	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
 		return fmt.Errorf("failed to write loop file: %w", err)
 	}
+	return nil
+}
+
+func (p *LoopPrompt) resetAllowance() error {
+	if p.LifecycleGeneration == ^uint64(0) {
+		return errors.New("loop lifecycle generation exhausted")
+	}
+	p.LifecycleGeneration++
+	p.PendingRestart = true
+	p.IterationCount = 0
+	p.FirstRunAt = nil
+	p.LastSentAt = nil
 	return nil
 }
 
@@ -1250,10 +1364,21 @@ func (ps *LoopStore) RecordSentWithoutIterationCount() error {
 }
 
 func (ps *LoopStore) recordSent(countIteration bool) error {
+	return ps.recordSentForGeneration(nil, countIteration)
+}
+
+// RecordSentForGeneration accounts a successful delivery only in its captured
+// lifecycle. countIteration=false preserves Slack's non-counting semantics.
+// Same-generation intentional pause/archive accounting keeps existing behavior.
+func (ps *LoopStore) RecordSentForGeneration(generation uint64, countIteration bool) error {
+	return ps.recordSentForGeneration(&generation, countIteration)
+}
+
+func (ps *LoopStore) recordSentForGeneration(generation *uint64, countIteration bool) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	existing, err := ps.getUnlocked()
+	existing, err := ps.getForGenerationUnlocked(generation)
 	if err != nil {
 		return err
 	}
@@ -1293,10 +1418,19 @@ func (ps *LoopStore) recordSent(countIteration bool) error {
 // schedule leg, whose next run is purely event-driven (NextScheduledAt is
 // always nil).
 func (ps *LoopStore) DeferNextSchedule(delay time.Duration) error {
+	return ps.deferNextSchedule(nil, delay)
+}
+
+// DeferNextScheduleForGeneration fences delivery-failure backoff after a reset.
+func (ps *LoopStore) DeferNextScheduleForGeneration(generation uint64, delay time.Duration) error {
+	return ps.deferNextSchedule(&generation, delay)
+}
+
+func (ps *LoopStore) deferNextSchedule(generation *uint64, delay time.Duration) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	existing, err := ps.getUnlocked()
+	existing, err := ps.getForGenerationUnlocked(generation)
 	if err != nil {
 		return err
 	}
@@ -1340,12 +1474,29 @@ func (ps *LoopStore) DeferNextSchedule(delay time.Duration) error {
 // a reliable "this stop was already recorded" marker: a re-stamp of a config
 // MarkStopped has already seen never re-notifies.
 func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
+	return ps.markStopped(nil, reason)
+}
+
+// MarkStoppedForGeneration fences delayed cap/duration and delivery-failure
+// stops. The check and write share the directory lock, never compare-then-write.
+func (ps *LoopStore) MarkStoppedForGeneration(generation uint64, reason StoppedReason) error {
+	return ps.markStopped(&generation, reason)
+}
+
+func (ps *LoopStore) markStopped(generation *uint64, reason StoppedReason) error {
 	ps.mu.Lock()
 
-	existing, err := ps.getUnlocked()
+	existing, err := ps.getForGenerationUnlocked(generation)
 	if err != nil {
 		ps.mu.Unlock()
 		return err
+	}
+	// Redundant explicit disables must not erase cap provenance. Archive/error
+	// transitions and all other meaningful reason changes remain allowed.
+	if !existing.Enabled && isCapStopReason(existing.StoppedReason) &&
+		(reason == StoppedReasonPausedByUser || reason == StoppedReasonDisabledByAgent) {
+		ps.mu.Unlock()
+		return nil
 	}
 
 	isTransition := existing.Enabled || existing.StoppedReason == ""
@@ -1376,6 +1527,42 @@ func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
 		observer(sessionID, reason)
 	}
 	return nil
+}
+
+func isCapStopReason(reason StoppedReason) bool {
+	return reason == StoppedReasonMaxDuration || reason == StoppedReasonMaxIterations || reason == StoppedReasonIterationSafeguard
+}
+
+// AcknowledgeRestartForGeneration consumes the pending notice only after a
+// successful delivery in this lifecycle. Failure/reload leaves it retryable;
+// repeated acknowledgment is a no-op and cannot consume a newer reset's notice.
+func (ps *LoopStore) AcknowledgeRestartForGeneration(generation uint64) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	existing, err := ps.getForGenerationUnlocked(&generation)
+	if err != nil {
+		return err
+	}
+	if !existing.PendingRestart {
+		return nil
+	}
+	existing.PendingRestart = false
+	existing.UpdatedAt = time.Now().UTC()
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write loop file: %w", err)
+	}
+	return nil
+}
+
+func (ps *LoopStore) getForGenerationUnlocked(generation *uint64) (*LoopPrompt, error) {
+	p, err := ps.getUnlocked()
+	if err != nil {
+		return nil, err
+	}
+	if generation != nil && p.LifecycleGeneration != *generation {
+		return nil, ErrLoopGenerationMismatch
+	}
+	return p, nil
 }
 
 // AcknowledgeStoppedReason records that the user has acknowledged (dismissed)
@@ -1429,6 +1616,10 @@ func (ps *LoopStore) getUnlocked() (*LoopPrompt, error) {
 // frequency-based schedule. A multi-trigger config that lists schedule
 // alongside onCompletion/onTasks still gets a next-run anchor (mitto-r6j.2).
 func (ps *LoopStore) computeNextScheduledTime(p *LoopPrompt) *time.Time {
+	return ps.computeNextScheduledTimeAt(p, time.Now().UTC())
+}
+
+func (ps *LoopStore) computeNextScheduledTimeAt(p *LoopPrompt, now time.Time) *time.Time {
 	if !p.Enabled {
 		return nil
 	}
@@ -1436,7 +1627,6 @@ func (ps *LoopStore) computeNextScheduledTime(p *LoopPrompt) *time.Time {
 		return nil
 	}
 
-	now := time.Now().UTC()
 	var next time.Time
 
 	if p.LastSentAt == nil {
