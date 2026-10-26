@@ -23,6 +23,64 @@ import (
 // compile-time check.
 var _ promptDeps = (*fakePromptDeps)(nil)
 
+func TestPromptDispatcher_RestartContextFinalText(t *testing.T) {
+	for _, mode := range []string{"absent", "failed", "replacement"} {
+		t.Run(mode, func(t *testing.T) {
+			d := newFakePromptDeps()
+			d.historyPrefix = "retained history: old budget exhausted\n"
+			d.hasProcessorMgr = mode != "absent"
+			if mode == "failed" {
+				d.applyErr = errors.New("processor unavailable")
+			}
+			if mode == "replacement" {
+				d.applyResult = &processors.ProcessorResult{Message: "processed task"}
+			}
+			meta := PromptMeta{SenderID: senderIDLoop, IterationNumber: 0, MaxIterations: 20,
+				LoopRestart: &processors.LoopRestartContext{Generation: 3, ConfiguredMaxIterations: 20, EffectiveMaxIterations: 10, MaxDurationSeconds: 14400}}
+			p := promptDispatcher{}
+			input := p.buildProcessorInput(d, "saved task", false, false, meta)
+			blocks := p.applyProcessorsAndBuildBlocks(d, input, "saved task", nil, true)
+			text := blocks[len(blocks)-1].Text.Text
+			for _, want := range []string{"retained history", "user authorized", "Prior exhaustion messages refer to the prior budget", "iteration index: 0 (zero-based)", "configured iteration limit: 20", "effective iteration limit: 10", "fresh, not yet anchored", "14400 seconds", "scheduler state governs exhaustion"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("missing %q in %s", want, text)
+				}
+			}
+			if input.IterationNumber != 0 || input.MaxIterations != 20 {
+				t.Fatal("changed existing iteration metadata")
+			}
+			input.LoopRestart = nil
+			ordinary := p.applyProcessorsAndBuildBlocks(d, input, "saved task", nil, true)
+			if strings.Contains(ordinary[len(ordinary)-1].Text.Text, "mitto_loop_restart") {
+				t.Fatal("ordinary run labeled restart")
+			}
+		})
+	}
+}
+
+func TestPromptDispatcher_RestartDurationState(t *testing.T) {
+	anchor := time.Date(2026, 10, 26, 8, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		seconds int
+		elapsed time.Duration
+		want    string
+	}{
+		{"remaining", 60, 20 * time.Second, "remaining at dispatch 40s"},
+		{"elapsed", 60, 2 * time.Minute, "remaining at dispatch 0s"},
+		{"unlimited", 0, 0, "no duration cap configured"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newFakePromptDeps()
+			input := &processors.ProcessorInput{IsLoop: true, LoopRestart: &processors.LoopRestartContext{MaxDurationSeconds: tc.seconds, FirstRunAt: &anchor, EvaluatedAt: anchor.Add(tc.elapsed)}}
+			blocks := (promptDispatcher{}).applyProcessorsAndBuildBlocks(d, input, "task", nil, false)
+			if text := blocks[len(blocks)-1].Text.Text; !strings.Contains(text, tc.want) {
+				t.Fatalf("missing %q: %s", tc.want, text)
+			}
+		})
+	}
+}
+
 type fakePromptDeps struct {
 	resetContextUsageCalls int
 

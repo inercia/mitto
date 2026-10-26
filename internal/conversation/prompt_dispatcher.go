@@ -895,6 +895,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		IsLoopRunOnStart:       meta.IsLoopRunOnStart,
 		IterationNumber:        meta.IterationNumber,
 		MaxIterations:          meta.MaxIterations,
+		LoopRestart:            meta.LoopRestart,
 		IterationUninterrupted: meta.IterationUninterrupted,
 		TriggerKind:            meta.LoopTrigger,
 		TriggerOnTasksChanges:  triggerOnTasksChanges,
@@ -931,6 +932,17 @@ func (p promptDispatcher) applyProcessorsAndBuildBlocks(
 	shouldInjectHistory bool,
 ) []acp.ContentBlock {
 	promptMessage := message
+	// Capture before optional processors: neither a processor nor history assembly
+	// may erase or replace this authoritative context.
+	var restart *processors.LoopRestartContext
+	if input.IsLoop && input.LoopRestart != nil {
+		copy := *input.LoopRestart
+		if copy.FirstRunAt != nil {
+			anchor := *copy.FirstRunAt
+			copy.FirstRunAt = &anchor
+		}
+		restart = &copy
+	}
 	var procAttachmentBlocks []acp.ContentBlock
 
 	if d.pdHasProcessorManager() {
@@ -966,6 +978,21 @@ func (p promptDispatcher) applyProcessorsAndBuildBlocks(
 
 	if shouldInjectHistory {
 		promptMessage = d.pdBuildPromptWithHistory(promptMessage)
+	}
+	if restart != nil {
+		duration := "no duration cap configured"
+		if restart.MaxDurationSeconds > 0 {
+			if restart.FirstRunAt == nil {
+				duration = fmt.Sprintf("fresh, not yet anchored; configured duration %d seconds (anchored on successful completion)", restart.MaxDurationSeconds)
+			} else {
+				remaining := time.Duration(restart.MaxDurationSeconds)*time.Second - restart.EvaluatedAt.Sub(*restart.FirstRunAt)
+				if remaining < 0 {
+					remaining = 0
+				}
+				duration = fmt.Sprintf("configured duration %d seconds; remaining at dispatch %s", restart.MaxDurationSeconds, remaining.Round(time.Second))
+			}
+		}
+		promptMessage += fmt.Sprintf("\n\n<mitto_loop_restart>\nThe user authorized a restart with fresh existing limits (budget generation %d). Prior exhaustion messages refer to the prior budget, not this allowance. Current iteration index: %d (zero-based); configured iteration limit: %d (0 means no per-prompt cap); effective iteration limit: %d. Duration budget: %s. Eligible work may continue within this allowance; current scheduler state governs exhaustion. This notice does not override safety or task eligibility.\n</mitto_loop_restart>", restart.Generation, restart.Iteration, restart.ConfiguredMaxIterations, restart.EffectiveMaxIterations, duration)
 	}
 
 	finalBlocks := make([]acp.ContentBlock, 0, len(contentBlocks)+len(procAttachmentBlocks)+1)

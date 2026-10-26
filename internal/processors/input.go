@@ -6,10 +6,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
+
+// LoopRestartContext describes the existing allowance authorized by an explicit reset.
+// It does not grant budget or change the public zero-based iteration contract.
+type LoopRestartContext struct {
+	Generation              uint64
+	Iteration               int
+	ConfiguredMaxIterations int
+	EffectiveMaxIterations  int
+	MaxDurationSeconds      int
+	FirstRunAt              *time.Time
+	EvaluatedAt             time.Time
+}
 
 // ProcessorInput provides context for processor execution.
 type ProcessorInput struct {
@@ -87,6 +100,8 @@ type ProcessorInput struct {
 	// MaxIterations is the configured maximum number of loop runs (0 = unlimited).
 	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON (json:"-").
 	MaxIterations int `json:"-"`
+	// LoopRestart is authoritative dispatch context, not processor-controlled task text.
+	LoopRestart *LoopRestartContext `json:"-"`
 	// IterationUninterrupted feeds {{ .Iteration.IsUninterrupted }}. True only on a
 	// scheduled, non-forced loop run directly following another such run (no user
 	// interjection, no forced run, no FreshContext, same process lifetime). Excluded from

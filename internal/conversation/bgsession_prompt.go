@@ -220,6 +220,8 @@ type PromptMeta struct {
 	IterationNumber int
 	// MaxIterations is the configured maximum number of loop runs (0 = unlimited).
 	MaxIterations int
+	// LoopRestart is present only while the persisted restart notice is pending.
+	LoopRestart *processors.LoopRestartContext
 	// IterationUninterrupted feeds {{ .Iteration.IsUninterrupted }}: true only on a
 	// scheduled, non-forced, non-FreshContext loop run that directly follows another
 	// such run with no interruption. Computed in PromptWithMeta from the session-scoped

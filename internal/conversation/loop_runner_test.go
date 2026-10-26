@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,253 @@ import (
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
+
+func TestLoopRunner_RestartDeliveryGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		stale, fail, keep, slack bool
+	}{
+		{name: "success"}, {name: "keep schedule", keep: true}, {name: "Slack no count", slack: true},
+		{name: "failure retains notice", fail: true}, {name: "stale success", stale: true}, {name: "stale failure", stale: true, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := session.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			recorder := session.NewRecorder(store)
+			if err := recorder.Start("test", t.TempDir(), ""); err != nil {
+				t.Fatal(err)
+			}
+			id := recorder.SessionID()
+			ls := store.Loop(id)
+			if err := ls.Set(&session.LoopPrompt{Prompt: "eligible task", Enabled: true, Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours}, MaxIterations: 20, MaxDurationSeconds: 14400}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.stale {
+				cap := 1
+				if err := ls.Update(session.LoopUpdate{MaxIterations: &cap}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := ls.ResetCounters(); err != nil {
+				t.Fatal(err)
+			}
+			loop, _ := ls.Get()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			proc := newFakeSharedProcess()
+			proc.promptHook = func() { once.Do(func() { close(entered) }) }
+			proc.promptBlock = release
+			if tc.fail {
+				proc.promptErr = errors.New("delivery failed")
+			}
+			bs := &BackgroundSession{ctx: ctx, cancel: cancel, observers: make(map[SessionObserver]struct{}), recorder: recorder, store: store, persistedID: id, workingDir: t.TempDir(), sharedProcess: proc, acpID: "acp-sess-1", pendingConfig: make(map[string]string), nextSeq: 2}
+			r := NewLoopRunner(store, nil, nil)
+			waitComplete := func() {
+				t.Helper()
+				deadline := time.After(5 * time.Second)
+				for {
+					r.dispatchInFlightMu.Lock()
+					_, held := r.dispatchInFlight[id]
+					r.dispatchInFlightMu.Unlock()
+					if !held {
+						return
+					}
+					select {
+					case <-deadline:
+						t.Fatal("completion did not release dispatch")
+					default:
+						runtime.Gosched()
+					}
+				}
+			}
+			trigger := session.TriggerSchedule
+			if tc.slack {
+				trigger = session.TriggerOnSlack
+			}
+			meta, _ := store.GetMetadata(id)
+			if err := r.deliverPrompt(bs, meta, loop, ls, !tc.keep, false, false, trigger, tc.keep, nil); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("transport did not start")
+			}
+			// Dispatch acceptance is pre-transport and must not consume pending.
+			pending, _ := store.Loop(id).Get()
+			if !pending.PendingRestart {
+				t.Fatal("notice consumed before success")
+			}
+			if err := r.deliverPrompt(bs, meta, loop, ls, true, true, false, trigger, true, nil); !errors.Is(err, ErrLoopDispatchCoalesced) {
+				t.Fatalf("duplicate dispatch: %v", err)
+			}
+			if tc.stale {
+				if err := store.Loop(id).ResetCounters(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			close(release)
+			waitComplete()
+			final, _ := store.Loop(id).Get()
+			if final.Prompt != "eligible task" || final.MaxDurationSeconds != 14400 || !reflect.DeepEqual(final.Arguments, loop.Arguments) {
+				t.Fatal("delivery changed task/configuration")
+			}
+			if tc.stale || tc.fail {
+				if !final.PendingRestart || final.IterationCount != 0 || final.FirstRunAt != nil || !final.Enabled {
+					t.Fatalf("failed/stale completion mutated allowance: %+v", final)
+				}
+			} else {
+				if final.PendingRestart {
+					t.Fatal("success did not acknowledge notice")
+				}
+				want := 1
+				if tc.keep || tc.slack {
+					want = 0
+				}
+				if final.IterationCount != want {
+					t.Fatalf("count=%d want=%d", final.IterationCount, want)
+				}
+				if tc.keep && (final.FirstRunAt != nil || final.LastSentAt != nil) {
+					t.Fatal("keep-schedule run accounted")
+				}
+				if !tc.keep && final.FirstRunAt == nil {
+					t.Fatal("successful counted/Slack run did not anchor duration")
+				}
+			}
+			proc.mu.Lock()
+			calls := append([]fakeSharedProcessPromptCall(nil), proc.promptCalls...)
+			proc.mu.Unlock()
+			if len(calls) != 1 {
+				t.Fatalf("transport calls=%d", len(calls))
+			}
+			var text string
+			for _, b := range calls[0].blocks {
+				if b.Text != nil {
+					text += b.Text.Text
+				}
+			}
+			if !strings.Contains(text, "<mitto_loop_restart>") || !strings.Contains(text, "fresh, not yet anchored") || !strings.Contains(text, "eligible task") {
+				t.Fatalf("missing final context: %s", text)
+			}
+			if !tc.stale && !tc.fail {
+				// A second real delivery after acknowledgment must not announce a reset.
+				if err := r.deliverPrompt(bs, meta, final, ls, false, true, false, trigger, true, nil); err != nil {
+					t.Fatal(err)
+				}
+				waitComplete()
+				proc.mu.Lock()
+				second := proc.promptCalls[len(proc.promptCalls)-1]
+				proc.mu.Unlock()
+				for _, b := range second.blocks {
+					if b.Text != nil && strings.Contains(b.Text.Text, "<mitto_loop_restart>") {
+						t.Fatal("ordinary run mislabeled restart")
+					}
+				}
+			}
+			if tc.fail && !tc.stale {
+				// Simulate runner reload: only persisted state carries the pending notice.
+				r = NewLoopRunner(store, nil, nil)
+				proc.promptErr = nil
+				reloaded := store.Loop(id)
+				if err := r.deliverPrompt(bs, meta, final, reloaded, false, true, false, trigger, true, nil); err != nil {
+					t.Fatal(err)
+				}
+				waitComplete()
+				after, _ := reloaded.Get()
+				if after.PendingRestart || after.LifecycleGeneration != final.LifecycleGeneration || after.IterationCount != 0 {
+					t.Fatalf("retry lost context or renewed budget: %+v", after)
+				}
+				proc.mu.Lock()
+				retry := proc.promptCalls[len(proc.promptCalls)-1]
+				proc.mu.Unlock()
+				found := false
+				for _, b := range retry.blocks {
+					if b.Text != nil && strings.Contains(b.Text.Text, "<mitto_loop_restart>") {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal("reload retry lost restart context")
+				}
+			}
+		})
+	}
+}
+
+func TestLoopRunner_RestartStaleStopsAndFailures(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	meta := session.Metadata{SessionID: "restart-fences", WorkingDir: t.TempDir()}
+	if err := store.Create(meta); err != nil {
+		t.Fatal(err)
+	}
+	ls := store.Loop(meta.SessionID)
+	anchor := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := ls.Set(&session.LoopPrompt{Prompt: "task", Enabled: true, Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours}, FirstRunAt: &anchor, MaxDurationSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := ls.Get()
+	if err := store.Loop(meta.SessionID).ResetCounters(); err != nil {
+		t.Fatal(err)
+	}
+	r := NewLoopRunner(store, nil, nil)
+	r.autoStopIfMaxDurationReached(meta.SessionID, old, ls, anchor.Add(time.Minute))
+	for i := 0; i < MaxLoopDeliveryFailures+MaxLoopContextWindowFailures; i++ {
+		r.handleDeliveryFailure(meta.SessionID, "", old, ls, errors.New("delivery failed"), true, false, session.TriggerSchedule, 0)
+		r.handleDeliveryFailure(meta.SessionID, "", old, ls, errors.New("413 Request Entity Too Large"), true, false, session.TriggerSchedule, 0)
+	}
+	final, _ := ls.Get()
+	if !final.Enabled || !final.PendingRestart || final.FirstRunAt != nil || final.StoppedReason != "" {
+		t.Fatalf("old stop/failure mutated new lifecycle: %+v", final)
+	}
+	// Old per-generation failures cannot contribute to the new delivery ceiling.
+	r.handleDeliveryFailure(meta.SessionID, "", final, ls, errors.New("delivery failed"), true, true, session.TriggerSchedule, 0)
+	after, _ := ls.Get()
+	if !after.Enabled {
+		t.Fatal("old failures poisoned new generation")
+	}
+}
+
+func TestLoopRunner_RestartDuringResolutionRejectsStaleDispatch(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	meta := session.Metadata{SessionID: "restart-resolve", WorkingDir: t.TempDir()}
+	if err := store.Create(meta); err != nil {
+		t.Fatal(err)
+	}
+	ls := store.Loop(meta.SessionID)
+	if err := ls.Set(&session.LoopPrompt{PromptName: "task", Enabled: true, Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours}}); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := ls.Get()
+	r := NewLoopRunner(store, nil, nil)
+	r.SetPromptResolver(func(string, string) (string, error) { return "task", store.Loop(meta.SessionID).ResetCounters() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := NewTestBackgroundSessionWithCtx(meta.SessionID, ctx, cancel)
+	if err := r.deliverPrompt(bs, meta, old, ls, true, true, false, session.TriggerSchedule, true, nil); !errors.Is(err, session.ErrLoopGenerationMismatch) {
+		t.Fatalf("stale dispatch error: %v", err)
+	}
+	if _, ok := r.claimDispatch(meta.SessionID, session.TriggerSchedule); !ok {
+		t.Fatal("stale dispatch leaked claim")
+	}
+	r.releaseDispatch(meta.SessionID)
+	current, _ := ls.Get()
+	if !current.PendingRestart || current.IterationCount != 0 {
+		t.Fatal("stale dispatch borrowed new notice")
+	}
+}
 
 // writeTestLoopFile writes a loop prompt directly to a file for testing.
 func writeTestLoopFile(path string, p *session.LoopPrompt) error {

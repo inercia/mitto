@@ -20,6 +20,7 @@ import (
 	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/fileutil"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -1701,7 +1702,7 @@ func (r *LoopRunner) fireOnStartPulses() {
 				r.runOnStartFiredMu.Unlock()
 			} else if errors.Is(err, ErrPromptResolveFailed) {
 				r.handlePromptResolveFailure(meta.SessionID, meta.Name, loop, loopStore, err)
-				r.rearmRunOnStartAfterFailure(meta.SessionID, meta.Name, loopStore, err)
+				r.rearmRunOnStartAfterFailure(meta.SessionID, meta.Name, loopStore, err, loop.LifecycleGeneration)
 			} else {
 				// This is a synchronous pre-dispatch failure (e.g. the boot pulse
 				// never reached the chat-stream RPC), so there is no session handle
@@ -2272,8 +2273,9 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 			}
 
 			r.consecutiveFailuresMu.Lock()
-			r.consecutiveFailures[sessionID]++
-			failures := r.consecutiveFailures[sessionID]
+			failureKey := loopFailureKey(sessionID, loop.LifecycleGeneration)
+			r.consecutiveFailures[failureKey]++
+			failures := r.consecutiveFailures[failureKey]
 			r.consecutiveFailuresMu.Unlock()
 
 			if r.logger != nil {
@@ -2292,7 +2294,10 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 				// non-archivable conversation, mitto-yvel.3) so the loop stops
 				// retrying regardless of whether the archive itself proceeds.
 				loopStore := r.store.Loop(sessionID)
-				if markErr := loopStore.MarkStopped(session.StoppedReasonResumeFailures); markErr != nil {
+				if markErr := loopStore.MarkStoppedForGeneration(loop.LifecycleGeneration, session.StoppedReasonResumeFailures); markErr != nil {
+					if errors.Is(markErr, session.ErrLoopGenerationMismatch) {
+						return 0, 0, 1
+					}
 					if r.logger != nil {
 						r.logger.Warn("Failed to mark loop stopped reason before archive",
 							"session_id", sessionID,
@@ -2364,7 +2369,7 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 				// Reset counter after handling (archived or skipped) so we don't
 				// re-trigger this branch on every subsequent tick.
 				r.consecutiveFailuresMu.Lock()
-				delete(r.consecutiveFailures, sessionID)
+				delete(r.consecutiveFailures, loopFailureKey(sessionID, loop.LifecycleGeneration))
 				r.consecutiveFailuresMu.Unlock()
 			}
 			return 0, 0, 1
@@ -2372,7 +2377,7 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 
 		// Reset consecutive failure counter on successful resume
 		r.consecutiveFailuresMu.Lock()
-		delete(r.consecutiveFailures, sessionID)
+		delete(r.consecutiveFailures, loopFailureKey(sessionID, loop.LifecycleGeneration))
 		r.consecutiveFailuresMu.Unlock()
 
 		if r.logger != nil {
@@ -2466,7 +2471,7 @@ func (r *LoopRunner) autoStopIfMaxDurationReached(sessionID string, loop *sessio
 			"elapsed", elapsed)
 	}
 
-	if err := loopStore.MarkStopped(session.StoppedReasonMaxDuration); err != nil {
+	if err := loopStore.MarkStoppedForGeneration(loop.LifecycleGeneration, session.StoppedReasonMaxDuration); err != nil {
 		if r.logger != nil {
 			r.logger.Warn("Failed to disable loop after reaching max duration",
 				"session_id", sessionID,
@@ -2493,7 +2498,7 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 }
 
 func (r *LoopRunner) handlePromptResolveFailureWithReport(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, report bool) {
-	if current, getErr := loopStore.Get(); getErr == nil && !current.Enabled {
+	if current, getErr := loopStore.Get(); getErr != nil || !current.Enabled || current.LifecycleGeneration != loop.LifecycleGeneration {
 		return
 	}
 	// Permanent prompt preparation failures stop immediately. A positively
@@ -2530,7 +2535,7 @@ func (r *LoopRunner) handlePromptResolveFailureWithReport(sessionID, sessionName
 		r.logger.Error("Loop prompt preparation failed; stopping loop", "session_id", sessionID, "prompt_name", loop.PromptName, "error", err)
 	}
 
-	if updErr := loopStore.MarkStopped(session.StoppedReasonPromptUnresolved); updErr != nil {
+	if updErr := loopStore.MarkStoppedForGeneration(loop.LifecycleGeneration, session.StoppedReasonPromptUnresolved); updErr != nil {
 		if r.logger != nil {
 			r.logger.Warn("Failed to disable loop after repeated resolve failures",
 				"session_id", sessionID, "error", updErr)
@@ -2643,10 +2648,15 @@ func (r *LoopRunner) releaseBeadClaim(sessionID, sessionName string) {
 // proceed with the regular schedule backoff and log the specific cause).
 // The onLoopAutoStopped callback is invoked when the auto-pause succeeds so clients
 // receive a broadcast update, mirroring the max-iterations auto-stop.
-func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, loopStore *session.LoopStore) bool {
+func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, loopStore *session.LoopStore, generations ...uint64) bool {
+	generation := uint64(0)
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
+	key := loopFailureKey(sessionID, generation)
 	r.contextWindowFailuresMu.Lock()
-	r.contextWindowFailures[sessionID]++
-	failures := r.contextWindowFailures[sessionID]
+	r.contextWindowFailures[key]++
+	failures := r.contextWindowFailures[key]
 	r.contextWindowFailuresMu.Unlock()
 
 	if failures < MaxLoopContextWindowFailures {
@@ -2660,7 +2670,7 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 		return false
 	}
 
-	if stopErr := loopStore.MarkStopped(session.StoppedReasonContextWindowExceeded); stopErr != nil {
+	if stopErr := loopStore.MarkStoppedForGeneration(generation, session.StoppedReasonContextWindowExceeded); stopErr != nil {
 		if r.logger != nil {
 			r.logger.Warn("Failed to auto-pause loop after repeated context-window failures",
 				"session_id", sessionID,
@@ -2684,9 +2694,18 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 		}
 	}
 	r.contextWindowFailuresMu.Lock()
-	delete(r.contextWindowFailures, sessionID)
+	delete(r.contextWindowFailures, key)
 	r.contextWindowFailuresMu.Unlock()
 	return true
+}
+
+// loopFailureKey keeps failure episodes isolated across explicit resets, including
+// failures that race the reset after their initial generation read.
+func loopFailureKey(sessionID string, generation uint64) string {
+	if generation == 0 {
+		return sessionID
+	}
+	return fmt.Sprintf("%s/generation/%d", sessionID, generation)
 }
 
 // handleDeliveryFailure processes a failed loop-prompt delivery. Called from the
@@ -2735,6 +2754,11 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 // unrelated, unchanged acp.IsContextTooLargeError: a small-context 400 (e.g. a
 // deferred model-switch race) still falls through to the generic classification.
 func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger, contextTurns int64) {
+	current, getErr := loopStore.Get()
+	if getErr != nil || current.LifecycleGeneration != loop.LifecycleGeneration {
+		return
+	}
+	key := loopFailureKey(sessionID, loop.LifecycleGeneration)
 	// mitto-96a: a FreshContext loop's in-place context-flush RPC
 	// (createFreshContextSession, prompt_dispatcher.go) surfaces the agent's
 	// OWN internal deadline/query-closed wedge (or a shared-process
@@ -2785,7 +2809,7 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 	}
 
 	if mittoAcp.IsContextTooLargeError(err) {
-		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
+		if r.handleContextWindowFailure(sessionID, sessionName, loopStore, loop.LifecycleGeneration) {
 			if r.onLoopUpdated != nil {
 				if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
 					r.onLoopUpdated(sessionID, updated)
@@ -2850,7 +2874,7 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 				"threshold", LoopFreshContextTurnThreshold,
 				"failure_class", failureClass)
 		}
-		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
+		if r.handleContextWindowFailure(sessionID, sessionName, loopStore, loop.LifecycleGeneration) {
 			if r.onLoopUpdated != nil {
 				if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
 					r.onLoopUpdated(sessionID, updated)
@@ -2865,12 +2889,12 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 	// Trigger-agnostic ceiling (mitto-bmct): count this failure and compare
 	// against MaxLoopDeliveryFailures regardless of trigger/forced-ness.
 	r.deliveryFailuresMu.Lock()
-	r.deliveryFailures[sessionID]++
-	failures := r.deliveryFailures[sessionID]
+	r.deliveryFailures[key]++
+	failures := r.deliveryFailures[key]
 	r.deliveryFailuresMu.Unlock()
 
 	if failures >= MaxLoopDeliveryFailures {
-		if stopErr := loopStore.MarkStopped(session.StoppedReasonDeliveryFailures); stopErr != nil {
+		if stopErr := loopStore.MarkStoppedForGeneration(loop.LifecycleGeneration, session.StoppedReasonDeliveryFailures); stopErr != nil {
 			if r.logger != nil {
 				r.logger.Warn("Failed to auto-pause loop after repeated delivery failures",
 					"session_id", sessionID,
@@ -2899,10 +2923,10 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 			}
 		}
 		r.deliveryFailuresMu.Lock()
-		delete(r.deliveryFailures, sessionID)
+		delete(r.deliveryFailures, key)
 		r.deliveryFailuresMu.Unlock()
 		r.scheduleBackoffFailuresMu.Lock()
-		delete(r.scheduleBackoffFailures, sessionID)
+		delete(r.scheduleBackoffFailures, key)
 		r.scheduleBackoffFailuresMu.Unlock()
 		return
 	}
@@ -2912,12 +2936,12 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 	// counter (mitto-r6j.2) — distinct from the trigger-agnostic ceiling above.
 	if resetTimer && !forced && firedBy == session.TriggerSchedule {
 		r.scheduleBackoffFailuresMu.Lock()
-		r.scheduleBackoffFailures[sessionID]++
-		scheduleFailures := r.scheduleBackoffFailures[sessionID]
+		r.scheduleBackoffFailures[key]++
+		scheduleFailures := r.scheduleBackoffFailures[key]
 		r.scheduleBackoffFailuresMu.Unlock()
 
 		delay := loopScheduleBackoff(scheduleFailures)
-		if deferErr := loopStore.DeferNextSchedule(delay); deferErr != nil {
+		if deferErr := loopStore.DeferNextScheduleForGeneration(loop.LifecycleGeneration, delay); deferErr != nil {
 			if r.logger != nil {
 				r.logger.Warn("Loop prompt failed, backoff could not be applied",
 					"session_id", sessionID,
@@ -2984,12 +3008,12 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 // pass contextTurnsUnknown (-1) when no session handle is available to measure it.
 func (r *LoopRunner) handleRunOnStartDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger, contextTurns int64) {
 	r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy, contextTurns)
-	r.rearmRunOnStartAfterFailure(sessionID, sessionName, loopStore, err)
+	r.rearmRunOnStartAfterFailure(sessionID, sessionName, loopStore, err, loop.LifecycleGeneration)
 }
 
-func (r *LoopRunner) rearmRunOnStartAfterFailure(sessionID, sessionName string, loopStore *session.LoopStore, err error) {
+func (r *LoopRunner) rearmRunOnStartAfterFailure(sessionID, sessionName string, loopStore *session.LoopStore, err error, generations ...uint64) {
 	updated, getErr := loopStore.Get()
-	if getErr != nil || updated == nil || !updated.Enabled {
+	if getErr != nil || updated == nil || !updated.Enabled || (len(generations) > 0 && updated.LifecycleGeneration != generations[0]) {
 		return
 	}
 
@@ -3107,6 +3131,17 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		}
 		return ErrLoopDispatchCoalesced
 	}
+	// Resolution may block across a reset. Never borrow the new generation's
+	// notice for this old dispatch; release admission on every rejected snapshot.
+	fresh, getErr := loopStore.Get()
+	if getErr != nil || fresh.LifecycleGeneration != loop.LifecycleGeneration {
+		r.releaseDispatch(sessionID)
+		if getErr != nil {
+			return getErr
+		}
+		return session.ErrLoopGenerationMismatch
+	}
+	loop = fresh
 
 	if r.logger != nil {
 		r.logger.Debug("Delivering loop prompt",
@@ -3204,6 +3239,15 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		}
 	}
 
+	var restart *processors.LoopRestartContext
+	if loop.PendingRestart {
+		restart = &processors.LoopRestartContext{
+			Generation: loop.LifecycleGeneration, Iteration: loop.IterationCount,
+			ConfiguredMaxIterations: loop.MaxIterations,
+			EffectiveMaxIterations:  config.EffectiveMaxLoopIterations(loop.MaxIterations, r.MaxLoopIterations()),
+			MaxDurationSeconds:      loop.MaxDurationSeconds, FirstRunAt: loop.FirstRunAt, EvaluatedAt: time.Now().UTC(),
+		}
+	}
 	meta := PromptMeta{
 		SenderID:         "loop-runner",
 		PromptID:         "",              // No client to confirm delivery to
@@ -3214,6 +3258,7 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		LoopKind:         loopKind,
 		IterationNumber:  loop.IterationCount,
 		MaxIterations:    loop.MaxIterations,
+		LoopRestart:      restart,
 		FreshContext:     freshContext,
 		Trigger:          triggerCtx,
 		LoopTrigger:      firedBy,
@@ -3228,6 +3273,10 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			// prompt terminates, regardless of success or failure (mitto-61z,
 			// mitto-r6j.2).
 			defer releaseSlot()
+			current, getErr := loopStore.Get()
+			if getErr != nil || current.LifecycleGeneration != loop.LifecycleGeneration {
+				return
+			}
 			if err != nil {
 				if isRunOnStart {
 					r.handleRunOnStartDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy, dispatchContextTurns)
@@ -3239,21 +3288,30 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 				}
 				return
 			}
+			if restart != nil {
+				if ackErr := loopStore.AcknowledgeRestartForGeneration(loop.LifecycleGeneration); ackErr != nil {
+					if r.logger != nil {
+						r.logger.Warn("Failed to acknowledge loop restart context", "session_id", sessionID, "error", ackErr)
+					}
+					return
+				}
+			}
+			key := loopFailureKey(sessionID, loop.LifecycleGeneration)
 
 			// Successful delivery — clear any accumulated scheduled-delivery backoff.
 			r.scheduleBackoffFailuresMu.Lock()
-			delete(r.scheduleBackoffFailures, sessionID)
+			delete(r.scheduleBackoffFailures, key)
 			r.scheduleBackoffFailuresMu.Unlock()
 
 			// Also clear the trigger-agnostic delivery-failure ceiling counter on
 			// any successful delivery, regardless of trigger (mitto-bmct).
 			r.deliveryFailuresMu.Lock()
-			delete(r.deliveryFailures, sessionID)
+			delete(r.deliveryFailures, key)
 			r.deliveryFailuresMu.Unlock()
 
 			// Also clear context-window failure counter on any successful delivery (mitto-7jn).
 			r.contextWindowFailuresMu.Lock()
-			delete(r.contextWindowFailures, sessionID)
+			delete(r.contextWindowFailures, key)
 			r.contextWindowFailuresMu.Unlock()
 
 			// Also clear the Slack auto-recovery attempt counter and exhaustion
@@ -3287,18 +3345,21 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			// loops' schedule/onCompletion legs counting normally.
 			var recordErr error
 			if firedBy == session.TriggerOnSlack {
-				recordErr = loopStore.RecordSentWithoutIterationCount()
+				recordErr = loopStore.RecordSentForGeneration(loop.LifecycleGeneration, false)
 			} else {
-				recordErr = loopStore.RecordSent()
+				recordErr = loopStore.RecordSentForGeneration(loop.LifecycleGeneration, true)
 			}
 			if recordErr != nil && !errors.Is(recordErr, session.ErrRecordSentOnStoppedLoop) {
+				if errors.Is(recordErr, session.ErrLoopGenerationMismatch) {
+					return
+				}
 				logLoopRecordSentFailure(r.logger, sessionID, recordErr)
 			} else {
 				if recordErr != nil {
 					logLoopRecordSentFailure(r.logger, sessionID, recordErr)
 				}
 				updated, getErr := loopStore.Get()
-				if getErr == nil && updated != nil {
+				if getErr == nil && updated != nil && updated.LifecycleGeneration == loop.LifecycleGeneration {
 					r.mu.Lock()
 					cfgCap := r.maxLoopIterations
 					r.mu.Unlock()
@@ -3335,7 +3396,7 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 						if perPromptReached {
 							stoppedReason = session.StoppedReasonMaxIterations
 						}
-						if disableErr := loopStore.MarkStopped(stoppedReason); disableErr != nil {
+						if disableErr := loopStore.MarkStoppedForGeneration(loop.LifecycleGeneration, stoppedReason); disableErr != nil {
 							if r.logger != nil {
 								r.logger.Warn("Failed to disable loop after reaching iteration cap",
 									"session_id", sessionID,
