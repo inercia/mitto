@@ -5484,7 +5484,9 @@ func TestChildReportCollector_GetPendingAndReported(t *testing.T) {
 	collector.startWait("test-task", childIDs)
 
 	// Report from only one child
-	collector.addReport("child-b", "test-task", []byte(`{"status":"completed"}`))
+	if _, err := collector.addReport("child-b", "test-task", []byte(`{"status":"completed","summary":"test report"}`)); err != nil {
+		t.Fatal(err)
+	}
 
 	pending, reported := collector.getPendingAndReported()
 
@@ -5545,7 +5547,9 @@ func TestChildReportCollector_StaleTaskReport_DoesNotCompleteWait(t *testing.T) 
 	}
 
 	// Report arrives with a STALE task id.
-	collector.addReport("child-a", "T2", []byte(`{"status":"completed"}`))
+	if _, err := collector.addReport("child-a", "T2", []byte(`{"status":"completed","summary":"test report"}`)); err != nil {
+		t.Fatal(err)
+	}
 
 	// The wait channel must NOT be closed.
 	select {
@@ -5603,7 +5607,9 @@ func TestChildReportCollector_MarkChildAutoCompleted_SurfacesStaleTaskReport(t *
 	}
 
 	// Child reports with a stale task id — does NOT satisfy the current wait.
-	collector.addReport("child-a", "T2", []byte(`{"status":"completed"}`))
+	if _, err := collector.addReport("child-a", "T2", []byte(`{"status":"completed","summary":"test report"}`)); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case <-waitCh:
@@ -5658,7 +5664,9 @@ func TestChildReportCollector_MarkChildFailed_OverwritesStaleTaskReport(t *testi
 		t.Fatal("Expected wait to not be done immediately")
 	}
 
-	collector.addReport("child-a", "T2", []byte(`{"status":"completed"}`))
+	if _, err := collector.addReport("child-a", "T2", []byte(`{"status":"completed","summary":"test report"}`)); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case <-waitCh:
@@ -5699,7 +5707,9 @@ func TestChildReportCollector_MatchingTaskReport_CompletesWait(t *testing.T) {
 		t.Fatal("Expected wait to not be done immediately")
 	}
 
-	collector.addReport("child-a", "T1", []byte(`{"status":"completed"}`))
+	if _, err := collector.addReport("child-a", "T1", []byte(`{"status":"completed","summary":"test report"}`)); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case <-waitCh:
@@ -5808,7 +5818,9 @@ func TestChildReportCollector_NoTaskID_AnyCompletedReportCounts(t *testing.T) {
 		t.Fatal("Expected wait to not be done immediately")
 	}
 
-	collector.addReport("child-a", "whatever-task", []byte(`{"status":"completed"}`))
+	if _, err := collector.addReport("child-a", "whatever-task", []byte(`{"status":"completed","summary":"test report"}`)); err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case <-waitCh:

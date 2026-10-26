@@ -1923,11 +1923,9 @@ func (s *Server) UnregisterSession(sessionID string) {
 	s.reaperMu.Unlock()
 	s.sessionsMu.Unlock()
 
-	// Drop the runtime cache. Accepted reports are durable and reload on demand.
+	// Collector identity outlives registration: in-flight writers must never
+	// compete with a newly loaded snapshot for the same parent.
 	s.UnbindACPSession(sessionID)
-	s.childReportCollectorsMu.Lock()
-	delete(s.childReportCollectors, sessionID)
-	s.childReportCollectorsMu.Unlock()
 
 	// mitto-bux: clear the sticky correlation mirror seeded by RegisterSession
 	// so a genuinely-unregistered session can no longer be resolved via the

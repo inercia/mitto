@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"time"
 
@@ -18,8 +17,7 @@ const childReportsStateFile = "child-reports.json"
 
 const childReportsLegacySnapshotFile = "child-reports.legacy-v0.json"
 
-// marshalChildReportHistory validates before any storage operation. These
-// helpers are inactive: live collector load/persist still use the legacy DTO.
+// marshalChildReportHistory validates before any storage operation.
 func marshalChildReportHistory(state childReportHistoryState) (json.RawMessage, error) {
 	if err := validateChildReportHistory(state); err != nil {
 		return nil, err
@@ -38,11 +36,10 @@ func writeChildReportHistory(store *session.Store, parentID string, state childR
 	return store.WriteSessionSidecarJSONDurable(parentID, childReportsStateFile, raw)
 }
 
-// readOrMigrateChildReportHistory is an opt-in, inactive storage foundation.
+// readOrMigrateChildReportHistory performs snapshot-first lazy migration.
 // Rollback is manual: stop writers, preserve the v1 file, verify and restore the
 // v0 snapshot. Reports accepted after conversion require reconciliation; never
-// automatically downgrade or dual-write. Do not wire this into live loading
-// until the producer/persistence adapters in Units 3–4 are ready.
+// automatically downgrade or dual-write.
 func readOrMigrateChildReportHistory(store *session.Store, parentID string) (childReportHistoryState, error) {
 	if store == nil {
 		return childReportHistoryState{}, errors.New("child report history requires a session store")
@@ -94,14 +91,7 @@ func readOrMigrateChildReportHistory(store *session.Store, parentID string) (chi
 	return decodeChildReportHistory(parentID, raw)
 }
 
-type persistedChildReportCollector struct {
-	CurrentTaskID string                  `json:"current_task_id,omitempty"`
-	Reports       map[string]*childReport `json:"reports"`
-}
-
-// These DTOs and pure helpers define the next storage format only. The live
-// loader/writer below intentionally still uses persistedChildReportCollector
-// until recoverable migration and checked writes are implemented together.
+// All live writers use this format; legacyChildReportState is migration input only.
 const childReportHistoryVersion = 1
 
 type childReportHistoryState struct {
@@ -343,41 +333,84 @@ func loadChildReportCollector(store *session.Store, parentSessionID string) (*ch
 		parentSessionID: parentSessionID,
 		reports:         make(map[string]*childReport),
 		store:           store,
+		entries:         []childReportEntry{},
+		diagnostics:     make(map[string]childWaitDiagnostic),
 	}
 	if store == nil {
 		return collector, nil
 	}
-	var state persistedChildReportCollector
-	err := store.ReadSessionSidecarJSON(parentSessionID, childReportsStateFile, &state)
-	if errors.Is(err, os.ErrNotExist) {
-		return collector, nil
-	}
+	state, err := readOrMigrateChildReportHistory(store, parentSessionID)
 	if err != nil {
 		return nil, err
 	}
 	collector.currentTaskID = state.CurrentTaskID
-	if state.Reports != nil {
-		collector.reports = state.Reports
+	collector.entries, collector.diagnostics = state.Entries, state.Diagnostics
+	for _, entry := range state.Entries {
+		collector.reports[entry.ChildID] = entry.compatibilityReport()
+	}
+	for childID, diagnostic := range state.Diagnostics {
+		collector.reports[childID] = diagnostic.compatibilityReport(collector.reports[childID])
 	}
 	return collector, nil
 }
 
 func (c *childReportCollector) persist() error {
-	if c.store == nil {
-		return nil
-	}
 	// Lock order is collector.mu before Store locks. Store code never calls back
 	// into a collector, so persistence cannot invert this order.
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.store.WriteSessionSidecarJSON(c.parentSessionID, childReportsStateFile, persistedChildReportCollector{
-		CurrentTaskID: c.currentTaskID,
-		Reports:       c.reports,
-	})
+	return c.persistHistoryLocked(c.historyLocked())
 }
 
-func (s *Server) deleteChildReportCollector(parentSessionID string) {
-	s.childReportCollectorsMu.Lock()
-	delete(s.childReportCollectors, parentSessionID)
-	s.childReportCollectorsMu.Unlock()
+// historyLocked returns an independently owned candidate. Store calls never
+// reenter a collector: the lock order remains collector -> Store.
+func (c *childReportCollector) historyLocked() childReportHistoryState {
+	state := childReportHistoryState{Version: childReportHistoryVersion, CurrentTaskID: c.currentTaskID,
+		Entries: make([]childReportEntry, len(c.entries)), Diagnostics: make(map[string]childWaitDiagnostic, len(c.diagnostics))}
+	for i, entry := range c.entries {
+		entry.Report = bytes.Clone(entry.Report)
+		state.Entries[i] = entry
+	}
+	for id, diagnostic := range c.diagnostics {
+		diagnostic.Legacy = bytes.Clone(diagnostic.Legacy)
+		state.Diagnostics[id] = diagnostic
+	}
+	return state
+}
+
+func (c *childReportCollector) persistHistoryLocked(state childReportHistoryState) error {
+	if err := validateChildReportHistory(state); err != nil {
+		return err
+	}
+	if c.writeHistory != nil {
+		return c.writeHistory(state)
+	}
+	if c.store == nil { // In-memory collectors are used by isolated unit tests.
+		return nil
+	}
+	return writeChildReportHistory(c.store, c.parentSessionID, state)
+}
+
+func (d childWaitDiagnostic) compatibilityReport(previous *childReport) *childReport {
+	if len(d.Legacy) != 0 {
+		var report childReport
+		_ = json.Unmarshal(d.Legacy, &report) // Validated at the storage boundary.
+		return &report
+	}
+	if d.Kind == childDiagnosticTaskMismatch && previous != nil {
+		copy := *previous
+		copy.Report = bytes.Clone(previous.Report)
+		copy.TaskMismatch = true
+		return &copy
+	}
+	status, summary := "auto_completed", "Child did not report back: "+d.Reason
+	if d.Kind == childDiagnosticFailed {
+		status, summary = "failed", "Queued send failed: "+d.Message
+	} else if d.Kind == childDiagnosticStuck {
+		status, summary = "stuck", d.Message
+	}
+	payload, _ := json.Marshal(map[string]string{"status": status, "summary": summary})
+	return &childReport{Report: payload, Completed: true, Timestamp: d.ObservedAt, TaskID: d.TaskID,
+		AutoCompleted: d.Kind == childDiagnosticAutoCompleted, AutoReason: d.Reason,
+		Failed: d.Kind == childDiagnosticFailed, FailMessage: d.Message}
 }

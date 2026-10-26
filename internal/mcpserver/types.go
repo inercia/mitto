@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/coldstart"
@@ -678,12 +680,13 @@ type childReportCollector struct {
 	reports         map[string]*childReport // child_id -> report (nil = pending)
 	// History owns its slice and every payload backing array. Entries are values
 	// immutable after acceptance; diagnostics and compatibility reports must not
-	// share mutable payloads with them. Live ingestion/persistence is wired in a
-	// later increment; the existing reports map remains unchanged for now.
+	// share mutable payloads with them. reports is only a temporary wait view.
 	entries     []childReportEntry
 	diagnostics map[string]childWaitDiagnostic
 	store       *session.Store
 	mu          sync.Mutex
+	// Optional per-collector persistence seam for deterministic failure tests.
+	writeHistory func(childReportHistoryState) error
 
 	// Wait signaling: non-nil only while a parent is actively waiting via mitto_children_tasks_wait.
 	// Closing waitCh unblocks the waiting parent.
@@ -731,23 +734,36 @@ func (c *childReportCollector) reportSurvivesTaskChange(r *childReport, taskID s
 // If the child provides a taskID, it is stored with the report for matching.
 // If the parent is currently waiting and this report completes the wait set, signals the parent.
 // Returns whether the parent was actively waiting for this child when the report arrived.
-func (c *childReportCollector) addReport(childID string, taskID string, report json.RawMessage) bool {
+// A persistence error leaves the candidate unpublished and never signals a waiter.
+func (c *childReportCollector) addReport(childID string, taskID string, report json.RawMessage) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	wasWaiting := c.waitCh != nil && c.waitingFor[childID]
 
-	r := c.reports[childID]
-	if r == nil {
-		r = &childReport{}
-		c.reports[childID] = r
+	association, effective := childReportUnassociated, ""
+	if taskID != "" {
+		association, effective = childReportExplicit, taskID
+	} else if wasWaiting && c.currentTaskID != "" {
+		association, effective = childReportInferred, c.currentTaskID
 	}
-	r.Report = report
-	r.Completed = true
-	r.Timestamp = time.Now()
-	r.TaskID = taskID
+	entry, err := newChildReportEntry(uuid.NewString(), childID, time.Now(), taskID, report, effective, association)
+	if err != nil {
+		return wasWaiting, err
+	}
+	candidate := c.historyLocked()
+	candidate.Entries = append(candidate.Entries, entry)
+	delete(candidate.Diagnostics, childID)
+	if err := c.persistHistoryLocked(candidate); err != nil {
+		return wasWaiting, err
+	}
+	c.entries, c.diagnostics = candidate.Entries, candidate.Diagnostics
+	if c.reports == nil {
+		c.reports = make(map[string]*childReport)
+	}
+	c.reports[childID] = entry.compatibilityReport()
 
 	c.checkAndSignalWait()
-	return wasWaiting
+	return wasWaiting, nil
 }
 
 // resetAutoCompletedForRetry returns synthetic results to pending before an
@@ -759,6 +775,7 @@ func (c *childReportCollector) resetAutoCompletedForRetry(childIDs []string) {
 	for _, childID := range childIDs {
 		if r := c.reports[childID]; r != nil && r.AutoCompleted {
 			c.reports[childID] = nil
+			delete(c.diagnostics, childID)
 		}
 	}
 }
@@ -767,7 +784,7 @@ func (c *childReportCollector) resetAutoCompletedForRetry(childIDs []string) {
 // stops responding without sending a report. This typically happens when
 // the agent finishes processing but doesn't call mitto_children_tasks_report.
 // The reason parameter provides diagnostic info (e.g., "agent_idle", "session_stopped").
-func (c *childReportCollector) markChildAutoCompleted(childID string, reason string) {
+func (c *childReportCollector) markChildAutoCompleted(childID string, reason string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -778,39 +795,24 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 	// returning false. Root cause of mitto-kn1.
 	r := c.reports[childID]
 	if r != nil && r.Completed && c.reportSatisfiesCurrentTask(r) {
-		return
+		return nil
 	}
 
 	// Never replace a genuine report with a synthetic idle result. A report
 	// scoped to a different task is still evidence: surface it to the parent
 	// with a task-mismatch warning instead of claiming the child never reported.
 	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed {
-		r.TaskMismatch = true
-		c.checkAndSignalWait()
-		return
+		return c.setDiagnosticLocked(childWaitDiagnostic{ChildID: childID, Kind: childDiagnosticTaskMismatch,
+			Reason: reason, ObservedAt: time.Now(), TaskID: r.TaskID})
 	}
 
-	reportJSON, _ := json.Marshal(map[string]string{
-		"status":  "auto_completed",
-		"summary": "Child did not report back: " + reason,
-	})
-
-	if r == nil {
-		r = &childReport{}
-		c.reports[childID] = r
-	}
-	r.Report = reportJSON
-	r.Completed = true
-	r.Timestamp = time.Now()
-	r.AutoCompleted = true
-	r.AutoReason = reason
-
-	c.checkAndSignalWait()
+	return c.setDiagnosticLocked(childWaitDiagnostic{ChildID: childID, Kind: childDiagnosticAutoCompleted,
+		Reason: reason, ObservedAt: time.Now()})
 }
 
 // markChildFailed marks a child as failed due to a queued-send error, so the
 // parent's wait loop sees status=failed instead of treating it as frozen/idle.
-func (c *childReportCollector) markChildFailed(childID string, msg string) {
+func (c *childReportCollector) markChildFailed(childID string, msg string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -819,25 +821,35 @@ func (c *childReportCollector) markChildFailed(childID string, msg string) {
 	// report must be overwritable so the queued-send failure can surface.
 	r := c.reports[childID]
 	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed && c.reportSatisfiesCurrentTask(r) {
-		return
+		return nil
 	}
 
-	reportJSON, _ := json.Marshal(map[string]string{
-		"status":  "failed",
-		"summary": "Queued send failed: " + msg,
-	})
+	return c.setDiagnosticLocked(childWaitDiagnostic{ChildID: childID, Kind: childDiagnosticFailed,
+		Message: msg, ObservedAt: time.Now()})
+}
 
-	if r == nil {
-		r = &childReport{}
-		c.reports[childID] = r
+func (c *childReportCollector) markChildStuck(childID, taskID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.setDiagnosticLocked(childWaitDiagnostic{ChildID: childID, Kind: childDiagnosticStuck,
+		TaskID: taskID, ObservedAt: time.Now(), Message: "Child session did not report after 30 minutes of cumulative waiting. The child may be unresponsive. Consider archiving this session."})
+}
+
+// Diagnostic publication uses the same durable boundary but never appends or
+// edits genuine entries. Its compatibility flags cannot leak into acceptance.
+func (c *childReportCollector) setDiagnosticLocked(d childWaitDiagnostic) error {
+	candidate := c.historyLocked()
+	candidate.Diagnostics[d.ChildID] = d
+	if err := c.persistHistoryLocked(candidate); err != nil {
+		return err
 	}
-	r.Report = reportJSON
-	r.Completed = true
-	r.Timestamp = time.Now()
-	r.Failed = true
-	r.FailMessage = msg
-
+	c.diagnostics = candidate.Diagnostics
+	if c.reports == nil {
+		c.reports = make(map[string]*childReport)
+	}
+	c.reports[d.ChildID] = d.compatibilityReport(c.reports[d.ChildID])
 	c.checkAndSignalWait()
+	return nil
 }
 
 // reportSatisfiesCurrentTask returns true if the given report counts as a completed
@@ -907,6 +919,7 @@ func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan
 			for id, r := range c.reports {
 				if !c.reportSurvivesTaskChange(r, taskID) {
 					delete(c.reports, id)
+					delete(c.diagnostics, id)
 				}
 			}
 		}
@@ -922,6 +935,11 @@ func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan
 		for _, id := range childIDs {
 			if r := oldReports[id]; c.reportSurvivesTaskChange(r, taskID) {
 				c.reports[id] = r // preserve matching or fresh unscoped report
+			}
+		}
+		for id := range c.diagnostics {
+			if c.reports[id] == nil {
+				delete(c.diagnostics, id)
 			}
 		}
 		c.currentTaskID = taskID
@@ -1052,7 +1070,7 @@ const (
 
 // childWaitDiagnostic is separate from genuine evidence. Legacy owns the full
 // original slot JSON, including ambiguous mixed flags and unknown fields. TaskID
-// records legacy context only; it cannot establish a report's association.
+// records diagnostic context only; it cannot establish a report's association.
 type childWaitDiagnostic struct {
 	ChildID    string                  `json:"child_id"`
 	Kind       childWaitDiagnosticKind `json:"kind"`
@@ -1063,8 +1081,8 @@ type childWaitDiagnostic struct {
 	Legacy     json.RawMessage         `json:"legacy,omitempty"`
 }
 
-// childReport is the legacy mutable slot / temporary wait compatibility view.
-// It must not become the owner of history once live storage is switched over.
+// childReport is the legacy slot shape / temporary wait compatibility view.
+// It never owns history; all genuine payloads are independently copied.
 type childReport struct {
 	Report        json.RawMessage `json:"report"`
 	Completed     bool            `json:"completed"`

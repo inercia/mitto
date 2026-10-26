@@ -368,7 +368,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 			"parent_session", realSessionID,
 			"child_session", childID,
 			"max_wait", maxChildWaitDuration)
-		collector.addReport(childID, input.TaskID, json.RawMessage(`{"status":"stuck","summary":"Child session did not report after 30 minutes of cumulative waiting. The child may be unresponsive. Consider archiving this session."}`))
+		if err := collector.markChildStuck(childID, input.TaskID); err != nil {
+			return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic: %v", err)}, nil
+		}
 	}
 
 	// If ALL valid children are not running, return immediately with not_running status.
@@ -560,7 +562,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 								continue
 							}
 							delete(startingChildren, childID)
-							collector.markChildFailed(childID, fmt.Sprintf("startup recovery failed: %v", resumeErr))
+							if err := collector.markChildFailed(childID, fmt.Sprintf("startup recovery failed: %v", resumeErr)); err != nil {
+								return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic: %v", err)}, nil
+							}
 							continue
 						}
 						if reason, wasPrompting := classifyStoppedChild(store, childID); reason != "" {
@@ -571,7 +575,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 									"parent_session", realSessionID,
 									"child_session", childID,
 									"reason", reason)
-								collector.markChildFailed(childID, reason)
+								if err := collector.markChildFailed(childID, reason); err != nil {
+									return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic: %v", err)}, nil
+								}
 								delete(childIdleSince, childID)
 								continue
 							}
@@ -590,7 +596,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 									"child_session", childID,
 									"error", metaErr,
 									"archived", childMeta.Archived)
-								collector.markChildFailed(childID, reason)
+								if err := collector.markChildFailed(childID, reason); err != nil {
+									return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic: %v", err)}, nil
+								}
 								delete(childIdleSince, childID)
 								continue
 							}
@@ -613,7 +621,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 									"parent_session", realSessionID,
 									"child_session", childID,
 									"error", resumeErr)
-								collector.markChildFailed(childID, fmt.Sprintf("%s: resume failed: %v", reason, resumeErr))
+								if err := collector.markChildFailed(childID, fmt.Sprintf("%s: resume failed: %v", reason, resumeErr)); err != nil {
+									return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic: %v", err)}, nil
+								}
 								delete(childIdleSince, childID)
 							}
 							continue
@@ -622,7 +632,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 						s.logger.Info("Child session stopped while waiting — auto-completing",
 							"parent_session", realSessionID,
 							"child_session", childID)
-						collector.markChildAutoCompleted(childID, "session_stopped")
+						if err := collector.markChildAutoCompleted(childID, "session_stopped"); err != nil {
+							return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic: %v", err)}, nil
+						}
 						delete(childIdleSince, childID)
 						continue
 					}
@@ -683,7 +695,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 							"parent_session", realSessionID,
 							"child_session", childID,
 							"error", errMsg)
-						collector.markChildFailed(childID, errMsg)
+						if err := collector.markChildFailed(childID, errMsg); err != nil {
+							return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic: %v", err)}, nil
+						}
 						delete(childIdleSince, childID)
 						continue
 					}
@@ -696,7 +710,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 								"parent_session", realSessionID,
 								"child_session", childID,
 								"idle_duration", time.Since(idleSince).Round(time.Second))
-							collector.markChildAutoCompleted(childID, "agent_idle")
+							if err := collector.markChildAutoCompleted(childID, "agent_idle"); err != nil {
+								return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic: %v", err)}, nil
+							}
 							delete(childIdleSince, childID)
 						}
 					} else {
@@ -917,8 +933,8 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 
 	// Store the report (may also signal a waiting parent). Capture the wait state
 	// atomically because signaling can let the parent clear it before we log.
-	parentWasWaiting := collector.addReport(realSessionID, input.TaskID, json.RawMessage(reportJSON))
-	if err := collector.persist(); err != nil {
+	parentWasWaiting, err := collector.addReport(realSessionID, input.TaskID, json.RawMessage(reportJSON))
+	if err != nil {
 		s.logger.Error("Failed to persist child report",
 			"child_session", realSessionID,
 			"parent_session", parentSessionID,
@@ -935,7 +951,6 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 		s.logger.Info("Child reported to temporarily unregistered parent — report persisted",
 			"child_session", realSessionID,
 			"parent_session", parentSessionID)
-		s.deleteChildReportCollector(parentSessionID)
 	} else if !parentWasWaiting {
 		s.logger.Info("Child reported to parent (no active wait — report stored for next wait cycle)",
 			"child_session", realSessionID,
