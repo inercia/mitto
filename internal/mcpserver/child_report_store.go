@@ -16,6 +16,84 @@ import (
 
 const childReportsStateFile = "child-reports.json"
 
+const childReportsLegacySnapshotFile = "child-reports.legacy-v0.json"
+
+// marshalChildReportHistory validates before any storage operation. These
+// helpers are inactive: live collector load/persist still use the legacy DTO.
+func marshalChildReportHistory(state childReportHistoryState) (json.RawMessage, error) {
+	if err := validateChildReportHistory(state); err != nil {
+		return nil, err
+	}
+	return json.Marshal(state)
+}
+
+func writeChildReportHistory(store *session.Store, parentID string, state childReportHistoryState) error {
+	raw, err := marshalChildReportHistory(state)
+	if err != nil {
+		return err
+	}
+	if store == nil {
+		return errors.New("child report history requires a session store")
+	}
+	return store.WriteSessionSidecarJSONDurable(parentID, childReportsStateFile, raw)
+}
+
+// readOrMigrateChildReportHistory is an opt-in, inactive storage foundation.
+// Rollback is manual: stop writers, preserve the v1 file, verify and restore the
+// v0 snapshot. Reports accepted after conversion require reconciliation; never
+// automatically downgrade or dual-write. Do not wire this into live loading
+// until the producer/persistence adapters in Units 3–4 are ready.
+func readOrMigrateChildReportHistory(store *session.Store, parentID string) (childReportHistoryState, error) {
+	if store == nil {
+		return childReportHistoryState{}, errors.New("child report history requires a session store")
+	}
+	raw, err := store.MigrateSessionSidecarJSON(parentID, childReportsStateFile, childReportsLegacySnapshotFile, func(raw, backup json.RawMessage) (json.RawMessage, error) {
+		if backup != nil {
+			var shape map[string]json.RawMessage
+			if err := json.Unmarshal(backup, &shape); err != nil || shape == nil {
+				return nil, errors.New("corrupt legacy snapshot")
+			}
+			if value, exists := shape["version"]; exists {
+				var version int
+				if bytes.Equal(bytes.TrimSpace(value), []byte("null")) || json.Unmarshal(value, &version) != nil || version != 0 {
+					return nil, errors.New("snapshot must be legacy version 0")
+				}
+			}
+			if _, err := decodeChildReportHistory(parentID, backup); err != nil {
+				return nil, fmt.Errorf("invalid legacy snapshot: %w", err)
+			}
+		}
+		if raw == nil {
+			return nil, nil
+		}
+		state, err := decodeChildReportHistory(parentID, raw)
+		if err != nil {
+			return nil, err
+		}
+		var shape map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &shape); err != nil {
+			return nil, err
+		}
+		var version int
+		if value, ok := shape["version"]; ok {
+			_ = json.Unmarshal(value, &version)
+		}
+		if version == childReportHistoryVersion {
+			// A prior attempt may have renamed v1 but failed directory sync.
+			// Reaffirm durability before returning accepted state on retry.
+			return raw, nil
+		}
+		return marshalChildReportHistory(state)
+	})
+	if err != nil {
+		return childReportHistoryState{}, err
+	}
+	if raw == nil {
+		return childReportHistoryState{Version: childReportHistoryVersion, Entries: []childReportEntry{}, Diagnostics: map[string]childWaitDiagnostic{}}, nil
+	}
+	return decodeChildReportHistory(parentID, raw)
+}
+
 type persistedChildReportCollector struct {
 	CurrentTaskID string                  `json:"current_task_id,omitempty"`
 	Reports       map[string]*childReport `json:"reports"`

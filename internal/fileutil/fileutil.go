@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -22,6 +23,71 @@ var atomicTmpCounter uint64
 // concurrently (e.g. the session was deleted), so there is nothing
 // meaningful left to persist into (mitto-32ef).
 var ErrParentDirMissing = errors.New("fileutil: parent directory does not exist")
+
+// WriteJSONAtomicDurableIfDirExists is an opt-in checked write. It never creates
+// directories. Success includes file sync/close, rename and directory sync/close.
+// An error after rename can leave the new value visible but unacknowledged;
+// callers must not infer that every error means the old value is still present.
+func WriteJSONAtomicDurableIfDirExists(path string, value any, perm os.FileMode) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal durable JSON: %w", err)
+	}
+	return writeAtomicDurable(path, data, perm, durableFileOps{
+		create: func(name string, mode os.FileMode) (durableFile, error) {
+			return os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		},
+		openDir: func(name string) (durableFile, error) { return os.Open(name) },
+		rename:  os.Rename, remove: os.Remove,
+	})
+}
+
+type durableFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+// Per-call operations keep failure injection deterministic without global hooks.
+type durableFileOps struct {
+	create  func(string, os.FileMode) (durableFile, error)
+	openDir func(string) (durableFile, error)
+	rename  func(string, string) error
+	remove  func(string) error
+}
+
+func writeAtomicDurable(path string, data []byte, perm os.FileMode, ops durableFileOps) error {
+	tmp := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), atomic.AddUint64(&atomicTmpCounter, 1))
+	f, err := ops.create(tmp, perm)
+	if err != nil {
+		return fmt.Errorf("create durable temporary file: %w", err)
+	}
+	defer ops.remove(tmp)
+	n, writeErr := f.Write(data)
+	if writeErr == nil && n != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr == nil {
+		writeErr = f.Sync()
+	}
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return fmt.Errorf("write/sync/close durable file: %w", err)
+	}
+	if err := ops.rename(tmp, path); err != nil {
+		return fmt.Errorf("rename durable file: %w", err)
+	}
+	dir, err := ops.openDir(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open durable directory (rename completed): %w", err)
+	}
+	syncErr := dir.Sync()
+	closeErr = dir.Close()
+	if err := errors.Join(syncErr, closeErr); err != nil {
+		return fmt.Errorf("sync/close durable directory (rename completed): %w", err)
+	}
+	return nil
+}
 
 // ReadJSON reads a JSON file and unmarshals it into the provided value.
 // The value must be a pointer to the target type.
