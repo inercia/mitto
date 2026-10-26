@@ -676,8 +676,14 @@ type childReportCollector struct {
 	parentSessionID string
 	currentTaskID   string                  // task_id of the current/last wait cycle
 	reports         map[string]*childReport // child_id -> report (nil = pending)
-	store           *session.Store
-	mu              sync.Mutex
+	// History owns its slice and every payload backing array. Entries are values
+	// immutable after acceptance; diagnostics and compatibility reports must not
+	// share mutable payloads with them. Live ingestion/persistence is wired in a
+	// later increment; the existing reports map remains unchanged for now.
+	entries     []childReportEntry
+	diagnostics map[string]childWaitDiagnostic
+	store       *session.Store
+	mu          sync.Mutex
 
 	// Wait signaling: non-nil only while a parent is actively waiting via mitto_children_tasks_wait.
 	// Closing waitCh unblocks the waiting parent.
@@ -1012,7 +1018,53 @@ func (c *childReportCollector) getStuckChildren() []string {
 	return stuck
 }
 
-// childReport stores the report from a single child conversation.
+type childReportAssociation string
+
+const (
+	childReportExplicit     childReportAssociation = "explicit"
+	childReportInferred     childReportAssociation = "inferred"
+	childReportUnassociated childReportAssociation = "unassociated"
+)
+
+// childReportEntry is immutable genuine evidence, not a completion decision.
+// Report owns a copy of the original JSON (including unknown fields). Supplied
+// identity never changes; effective association is recorded once, independently
+// of later waits. Slice order, not ReceivedAt, orders newly accepted entries.
+type childReportEntry struct {
+	ID              string                 `json:"id"`
+	ChildID         string                 `json:"child_id"`
+	ReceivedAt      time.Time              `json:"received_at"`
+	SuppliedTaskID  string                 `json:"supplied_task_id,omitempty"`
+	Report          json.RawMessage        `json:"report"`
+	EffectiveTaskID string                 `json:"effective_task_id,omitempty"`
+	Association     childReportAssociation `json:"association"`
+}
+
+type childWaitDiagnosticKind string
+
+const (
+	childDiagnosticAutoCompleted childWaitDiagnosticKind = "auto_completed"
+	childDiagnosticFailed        childWaitDiagnosticKind = "failed"
+	childDiagnosticStuck         childWaitDiagnosticKind = "stuck"
+	childDiagnosticTaskMismatch  childWaitDiagnosticKind = "task_mismatch"
+	childDiagnosticLegacyMixed   childWaitDiagnosticKind = "legacy_mixed"
+)
+
+// childWaitDiagnostic is separate from genuine evidence. Legacy owns the full
+// original slot JSON, including ambiguous mixed flags and unknown fields. TaskID
+// records legacy context only; it cannot establish a report's association.
+type childWaitDiagnostic struct {
+	ChildID    string                  `json:"child_id"`
+	Kind       childWaitDiagnosticKind `json:"kind"`
+	Reason     string                  `json:"reason,omitempty"`
+	Message    string                  `json:"message,omitempty"`
+	ObservedAt time.Time               `json:"observed_at"`
+	TaskID     string                  `json:"task_id,omitempty"`
+	Legacy     json.RawMessage         `json:"legacy,omitempty"`
+}
+
+// childReport is the legacy mutable slot / temporary wait compatibility view.
+// It must not become the owner of history once live storage is switched over.
 type childReport struct {
 	Report        json.RawMessage `json:"report"`
 	Completed     bool            `json:"completed"`
