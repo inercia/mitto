@@ -16,3 +16,10 @@ func (s *Server) loopDelayFloor() int {
 	}
 	return configPkg.DefaultMinLoopCompletionDelaySeconds
 }
+
+func (s *Server) loopMaxIterations() int {
+	if s.loopRunner != nil {
+		return s.loopRunner.MaxLoopIterations()
+	}
+	return configPkg.DefaultMaxLoopIterations
+}

@@ -5,12 +5,14 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -504,6 +506,10 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	s.mu.RLock()
 	store := s.store
 	sm := s.sessionManager
+	cfgCap := config.DefaultMaxLoopIterations
+	if s.config != nil {
+		cfgCap = s.config.Conversations.GetMaxLoopIterations()
+	}
 	s.mu.RUnlock()
 
 	if store == nil {
@@ -1018,7 +1024,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				subs := input.LoopSlackSubscriptions
 				slackSubscriptionsPtr = &subs
 			}
-			if err := loopStore.Update(session.LoopUpdate{
+			transition, err := loopStore.UpdateLifecycle(session.LoopUpdate{
 				Prompt:              prompt,
 				PromptName:          promptName,
 				Frequency:           freq,
@@ -1036,7 +1042,17 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				CoalesceDuringBusy:  input.LoopCoalesceDuringBusy,
 				RunOnStart:          input.LoopRunOnStart,
 				SettleWindowSeconds: input.LoopSettleWindowSeconds,
-			}); err != nil {
+			}, session.LoopLifecycleUpdate{
+				// Ordinary MCP enable never authorizes a fresh allowance.
+				EffectiveMaxIterations: func(promptMax int) int {
+					return config.EffectiveMaxLoopIterations(promptMax, cfgCap)
+				},
+			})
+			if err != nil {
+				if errors.Is(err, session.ErrLoopRestartRequired) {
+					return nil, ConversationUpdateOutput{Success: false, ErrorCode: "loop_restart_required",
+						Error: "Loop allowance exhausted. Ask the user to confirm Restart with fresh limits in Play; ordinary MCP enable does not reset the budget."}, nil
+				}
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update loop: %v", err),
@@ -1049,7 +1065,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			// above) so a prompt's mode:optional/default:false does not get
 			// mislabelled as an agent-initiated pause (mitto-ydj).
 			if callerSetLoopEnabled && input.LoopEnabled != nil && !*input.LoopEnabled {
-				if err := loopStore.MarkStopped(session.StoppedReasonDisabledByAgent); err != nil {
+				if err := loopStore.MarkStoppedForGeneration(transition.LifecycleGeneration, session.StoppedReasonDisabledByAgent); err != nil && !errors.Is(err, session.ErrLoopGenerationMismatch) {
 					s.logger.Warn("Failed to record disabledByAgent reason", "error", err)
 				}
 			}

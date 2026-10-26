@@ -536,6 +536,7 @@ type UserDataAttributeUpdate struct {
 
 // ConversationUpdateOutput is the output for mitto_conversation_update tool.
 type ConversationUpdateOutput struct {
+	ErrorCode      string                    `json:"error_code,omitempty"` // Machine-readable actionable lifecycle failure
 	Success        bool                      `json:"success"`
 	ConversationID string                    `json:"conversation_id,omitempty"`
 	Updated        []string                  `json:"updated,omitempty"`     // List of property names that were changed

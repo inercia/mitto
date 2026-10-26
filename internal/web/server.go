@@ -1780,6 +1780,7 @@ func NewServer(config Config) (*Server, error) {
 		ErrSessionBusy:                        conversation.ErrSessionBusy,
 		ErrLoopNotEnabled:                     conversation.ErrLoopNotEnabled,
 		LoopDelayFloor:                        s.loopDelayFloor,
+		LoopMaxIterations:                     s.loopMaxIterations,
 		BroadcastLoopUpdated:                  s.BroadcastLoopUpdated,
 		BroadcastBeadsCleanupProgress:         s.BroadcastBeadsCleanupProgress,
 		BootstrapOnCompletion:                 s.loopRunner.BootstrapOnCompletion,

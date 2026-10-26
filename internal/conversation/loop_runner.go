@@ -753,6 +753,14 @@ func (r *LoopRunner) SetMaxLoopIterations(n int) {
 	r.maxLoopIterations = n
 }
 
+// MaxLoopIterations snapshots the configured cap for API lifecycle validation.
+// Call before taking a loop-store lock to preserve runner/store lock ordering.
+func (r *LoopRunner) MaxLoopIterations() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.maxLoopIterations
+}
+
 // SetLoopWorkspaceConcurrency sets the maximum number of scheduled loop
 // prompts that may be in flight simultaneously per WorkingDir + ACPServer
 // pair. 0 disables the cap. Negative values are clamped to 0. Manual "Run

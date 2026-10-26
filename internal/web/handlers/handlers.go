@@ -342,6 +342,9 @@ type Deps struct {
 	// floor (in seconds) for the on-completion delay. When nil, handlers fall back
 	// to the package default.
 	LoopDelayFloor func() int
+	// LoopMaxIterations snapshots the runner's configured cap before store locking.
+	// Handlers resolve the effective per-prompt policy with config's shared helper.
+	LoopMaxIterations func() int
 
 	// BroadcastLoopUpdated mirrors Server.BroadcastLoopUpdated: broadcasts
 	// a loop-config change to all connected clients for the given session

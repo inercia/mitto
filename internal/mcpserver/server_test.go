@@ -10813,6 +10813,92 @@ func TestPromptUpdate_EnableDisableOnly(t *testing.T) {
 // handleRunLoopNow Tests
 // =============================================================================
 
+func TestConversationUpdate_LifecycleBudgets(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		count     int
+		promptCap int
+		configCap int
+		duration  int
+		reason    session.StoppedReason
+		exhausted bool
+	}{
+		{"duration", 2, 10, 10, 60, session.StoppedReasonMaxDuration, true},
+		{"iterations", 10, 10, 20, 0, session.StoppedReasonMaxIterations, true},
+		{"global-safeguard", config.GlobalMaxLoopIterations, 0, 3, 0, session.StoppedReasonIterationSafeguard, true},
+		{"configured-safeguard", 3, 10, 3, 0, session.StoppedReasonIterationSafeguard, true},
+		{"missing-reason", 10, 10, 20, 0, "", true},
+		{"misleading-reason", 10, 10, 20, 0, session.StoppedReasonDisabledByAgent, true},
+		{"remaining", 2, 10, 10, 3600, session.StoppedReasonPausedByUser, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, srv, sid := setupConversationStartServer(t)
+			srv.mu.Lock()
+			srv.config = &config.Config{Conversations: &config.ConversationsConfig{MaxLoopIterations: &tc.configCap}}
+			srv.mu.Unlock()
+			runner := &mockLoopRunner{}
+			srv.SetLoopRunner(runner)
+			ps := store.Loop(sid)
+			anchor := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+			if !tc.exhausted {
+				anchor = time.Now().UTC()
+			}
+			p := &session.LoopPrompt{Prompt: "keep going", PromptName: "task", Arguments: map[string]string{"TASK": "preserve"},
+				Triggers: []session.LoopTrigger{session.TriggerOnCompletion, session.TriggerOnTasks}, DelaySeconds: 30,
+				IterationCount: tc.count, MaxIterations: tc.promptCap, MaxDurationSeconds: tc.duration,
+				FirstRunAt: &anchor, LastSentAt: &anchor, StoppedReason: tc.reason, StoppedAt: &anchor,
+				AcknowledgedStoppedReason: tc.reason}
+			if err := ps.RestoreSnapshot(p); err != nil {
+				t.Fatal(err)
+			}
+			enabled := false
+			_, out, err := srv.handleConversationUpdate(context.Background(), nil, ConversationUpdateInput{
+				SelfID: sid, ConversationID: "self", LoopEnabled: &enabled,
+			})
+			if err != nil || !out.Success {
+				t.Fatalf("redundant disable = %+v, %v", out, err)
+			}
+			stored, _ := ps.Get()
+			if tc.reason == session.StoppedReasonMaxDuration || tc.reason == session.StoppedReasonMaxIterations || tc.reason == session.StoppedReasonIterationSafeguard {
+				if stored.StoppedReason != tc.reason || stored.AcknowledgedStoppedReason != tc.reason || !stored.StoppedAt.Equal(anchor) {
+					t.Fatalf("redundant disable erased cap provenance: %+v", stored)
+				}
+			} else if stored.StoppedReason != session.StoppedReasonDisabledByAgent {
+				t.Fatalf("explicit caller disable not recorded: %+v", stored)
+			}
+			beforeJSON, _ := json.Marshal(stored)
+			beforeBootstrap := len(runner.bootstrapCalls)
+			enabled = true
+			for i := 0; i < 2; i++ {
+				_, out, err = srv.handleConversationUpdate(context.Background(), nil, ConversationUpdateInput{
+					SelfID: sid, ConversationID: "self", LoopEnabled: &enabled,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				stored, _ = ps.Get()
+				if tc.exhausted {
+					if out.Success || out.ErrorCode != "loop_restart_required" || !strings.Contains(out.Error, "Restart with fresh limits") {
+						t.Fatalf("ordinary exhausted enable = %+v", out)
+					}
+					afterJSON, _ := json.Marshal(stored)
+					if string(beforeJSON) != string(afterJSON) || len(runner.bootstrapCalls) != beforeBootstrap {
+						t.Fatal("rejected MCP enable mutated state or bootstrapped")
+					}
+				} else if !out.Success || out.ErrorCode != "" || !stored.Enabled || stored.StoppedReason != "" {
+					t.Fatalf("ordinary remaining resume = %+v, stored=%+v", out, stored)
+				}
+				if stored.IterationCount != tc.count || stored.LifecycleGeneration != 0 || stored.PendingRestart || !stored.FirstRunAt.Equal(anchor) || !stored.LastSentAt.Equal(anchor) || stored.MaxIterations != tc.promptCap || stored.MaxDurationSeconds != tc.duration || stored.Arguments["TASK"] != "preserve" || stored.PromptName != "task" || len(stored.Triggers) != 2 {
+					t.Fatalf("MCP renewed budget or changed unrelated config: %+v", stored)
+				}
+			}
+			if len(runner.calls) != 0 {
+				t.Fatal("lifecycle update must not issue run-now in addition to bootstrap")
+			}
+		})
+	}
+}
+
 // mockLoopRunner is a mock implementation of LoopRunner for testing.
 type mockLoopRunner struct {
 	mu             sync.Mutex

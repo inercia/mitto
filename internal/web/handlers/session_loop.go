@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
+	"time"
 
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // LoopPromptRequest is the request body for creating/updating a loop prompt.
@@ -126,6 +129,47 @@ func (h *Handlers) loopDelayFloor() int {
 	return configPkg.DefaultMinLoopCompletionDelaySeconds
 }
 
+func (h *Handlers) loopMaxIterations() int {
+	if h.deps.LoopMaxIterations != nil {
+		return h.deps.LoopMaxIterations()
+	}
+	return configPkg.DefaultMaxLoopIterations
+}
+
+// loopPromptResponse adds derived state without persisting it or losing the
+// LoopPrompt custom JSON/unknown-field compatibility contract. Embedding the
+// marshaler directly would silently omit Budget from the response.
+type loopPromptResponse struct {
+	loop   *session.LoopPrompt
+	budget api.LoopBudgetState
+}
+
+func (p loopPromptResponse) MarshalJSON() ([]byte, error) {
+	raw, err := json.Marshal(p.loop)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	fields["budget"], err = json.Marshal(p.budget)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(fields)
+}
+
+func (h *Handlers) loopResponse(p *session.LoopPrompt) loopPromptResponse {
+	now := time.Now().UTC()
+	effective := configPkg.EffectiveMaxLoopIterations(p.MaxIterations, h.loopMaxIterations())
+	reason := p.ExhaustedReason(now, effective)
+	return loopPromptResponse{loop: p, budget: api.LoopBudgetState{
+		Exhausted: reason != "", Resumable: reason == "", ExhaustedReason: string(reason),
+		EffectiveMaxIterations: effective, EvaluatedAt: now.Format(time.RFC3339Nano),
+	}}
+}
+
 // HandleSessionLoop handles loop prompt operations for a session.
 // Routes: GET, PUT, PATCH, DELETE /api/sessions/{id}/loop
 // Route: POST /api/sessions/{id}/loop/run-now (immediate delivery)
@@ -213,7 +257,7 @@ func (h *Handlers) handleGetLoop(w http.ResponseWriter, ps *session.LoopStore) {
 		return
 	}
 
-	writeJSONOK(w, p)
+	writeJSONOK(w, h.loopResponse(p))
 }
 
 // triggerTitleFromLoop triggers title generation from a loop prompt when

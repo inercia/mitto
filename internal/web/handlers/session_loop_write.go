@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -124,7 +125,7 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		h.deps.BootstrapOnCompletion(sessionID)
 	}
 
-	writeJSONOK(w, updated)
+	writeJSONOK(w, h.loopResponse(updated))
 }
 
 // handlePatchLoop handles PATCH /api/sessions/{id}/loop
@@ -155,7 +156,10 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		}
 	}
 
-	if err := ps.Update(session.LoopUpdate{
+	// Snapshot runner configuration before entering the store's directory lock.
+	// The pure resolver then uses the locked proposed per-prompt cap.
+	cfgCap := h.loopMaxIterations()
+	transition, err := ps.UpdateLifecycle(session.LoopUpdate{
 		Prompt:              req.Prompt,
 		PromptName:          req.PromptName,
 		Frequency:           req.Frequency,
@@ -174,7 +178,18 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		CoalesceDuringBusy:  req.CoalesceDuringBusy,
 		RunOnStart:          req.RunOnStart,
 		SettleWindowSeconds: req.SettleWindowSeconds,
-	}); err != nil {
+	}, session.LoopLifecycleUpdate{
+		ResetCounters: req.ResetCounters != nil && *req.ResetCounters,
+		EffectiveMaxIterations: func(promptMax int) int {
+			return configPkg.EffectiveMaxLoopIterations(promptMax, cfgCap)
+		},
+	})
+	if err != nil {
+		if errors.Is(err, session.ErrLoopRestartRequired) {
+			writeErrorJSON(w, http.StatusConflict, "loop_restart_required",
+				"Loop allowance exhausted. Refresh loop state and confirm Restart with fresh limits (enabled:true, reset_counters:true).")
+			return
+		}
 		if errors.Is(err, session.ErrLoopNotFound) {
 			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
 			return
@@ -195,22 +210,10 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		return
 	}
 
-	// Reset the iteration/elapsed-time anchors when requested (e.g. restoring a
-	// conversation that auto-stopped after reaching its max-iterations/max-duration cap).
-	if req.ResetCounters != nil && *req.ResetCounters {
-		if err := ps.ResetCounters(); err != nil {
-			if h.deps.Logger != nil {
-				h.deps.Logger.Error("Failed to reset loop counters", "error", err)
-			}
-			writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to reset loop counters")
-			return
-		}
-	}
-
 	// Record WHY the loop was paused so the UI can show an amber "Paused by you"
 	// pill (resumable) instead of a blank glance line. Re-enabling clears it.
 	if req.Enabled != nil && !*req.Enabled {
-		if err := ps.MarkStopped(session.StoppedReasonPausedByUser); err != nil && h.deps.Logger != nil {
+		if err := ps.MarkStoppedForGeneration(transition.LifecycleGeneration, session.StoppedReasonPausedByUser); err != nil && !errors.Is(err, session.ErrLoopGenerationMismatch) && h.deps.Logger != nil {
 			h.deps.Logger.Warn("Failed to record pausedByUser reason", "error", err)
 		}
 	}
@@ -239,7 +242,7 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		h.deps.BootstrapOnCompletion(sessionID)
 	}
 
-	writeJSONOK(w, updated)
+	writeJSONOK(w, h.loopResponse(updated))
 }
 
 // resetLoopContinuation clears the live BackgroundSession's loop continuation marker

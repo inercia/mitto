@@ -103,11 +103,21 @@ type LoopPatchRequest struct {
 	ResetCounters *bool `json:"reset_counters,omitempty"`
 }
 
+// LoopBudgetState is response-only authority for fresh restart vs remaining
+// allowance. Resumable describes budget eligibility, not authorization or busy
+// state. EvaluatedAt marks the snapshot; resume is always revalidated on write.
+type LoopBudgetState struct {
+	Exhausted              bool   `json:"exhausted"`
+	Resumable              bool   `json:"resumable"`
+	ExhaustedReason        string `json:"exhausted_reason,omitempty"`
+	EffectiveMaxIterations int    `json:"effective_max_iterations"`
+	EvaluatedAt            string `json:"evaluated_at"`
+}
+
 // LoopConfig represents the loop configuration for a session. It mirrors the
-// wire shape of the server's session.LoopPrompt; timestamps are kept as their
-// raw RFC 3339 strings (as NextScheduledAt already was) rather than time.Time
-// so the whole type decodes uniformly.
+// server response; timestamps remain raw RFC 3339 strings for uniform decoding.
 type LoopConfig struct {
+	Budget          *LoopBudgetState  `json:"budget,omitempty"`
 	Prompt          string            `json:"prompt,omitempty"`
 	PromptName      string            `json:"prompt_name,omitempty"`
 	Arguments       map[string]string `json:"arguments,omitempty"`

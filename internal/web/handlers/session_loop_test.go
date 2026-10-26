@@ -13,6 +13,7 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // newLoopStore creates a temp store and returns it together with a Handlers
@@ -27,6 +28,208 @@ func newLoopStore(t *testing.T) (*session.Store, *Handlers) {
 	t.Cleanup(func() { store.Close() })
 	h := New(Deps{Store: store})
 	return store, h
+}
+
+func TestHandleSessionLoop_LifecycleBudgets(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		count     int
+		promptCap int
+		configCap int
+		duration  int
+		reason    session.StoppedReason
+	}{
+		{"duration", 2, 10, 10, 60, session.StoppedReasonMaxDuration},
+		{"iterations", 10, 10, 20, 0, session.StoppedReasonMaxIterations},
+		{"global-safeguard", configPkg.GlobalMaxLoopIterations, 0, 3, 0, session.StoppedReasonIterationSafeguard},
+		{"configured-safeguard", 3, 10, 3, 0, session.StoppedReasonIterationSafeguard},
+		{"remaining", 2, 10, 10, 0, ""},
+		{"remaining-duration", 2, 10, 10, 86400, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, h := newLoopStore(t)
+			const sid = "lifecycle-budget"
+			if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			h.deps.LoopMaxIterations = func() int { return tc.configCap }
+			ps := store.Loop(sid)
+			anchor := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+			if tc.reason == "" && tc.duration > 0 {
+				anchor = time.Now().UTC()
+			}
+			p := &session.LoopPrompt{Prompt: "keep going", PromptName: "task", Arguments: map[string]string{"TASK": "preserve"},
+				Triggers: []session.LoopTrigger{session.TriggerOnCompletion, session.TriggerOnTasks}, DelaySeconds: 30,
+				IterationCount: tc.count, MaxIterations: tc.promptCap, MaxDurationSeconds: tc.duration,
+				FirstRunAt: &anchor, LastSentAt: &anchor, StoppedReason: tc.reason, StoppedAt: &anchor,
+				AcknowledgedStoppedReason: tc.reason}
+			if err := ps.RestoreSnapshot(p); err != nil {
+				t.Fatal(err)
+			}
+			broadcasts, bootstraps, runNow := 0, 0, 0
+			h.deps.BroadcastLoopUpdated = func(_ string, _ *session.LoopPrompt) { broadcasts++ }
+			h.deps.BootstrapOnCompletion = func(string) {
+				bootstraps++
+				stored, err := store.Loop(sid).Get()
+				// Existing callbacks also run for disable/config-only writes;
+				// the real runner owns admission and ignores disabled loops.
+				if err != nil || stored == nil {
+					t.Errorf("bootstrap before persistence: %+v, %v", stored, err)
+				}
+			}
+			h.deps.TriggerLoopNow = func(string, bool) error { runNow++; return nil }
+			request := func(method, body string) *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				h.HandleSessionLoop(w, httptest.NewRequest(method, "/loop", strings.NewReader(body)), sid, "")
+				return w
+			}
+			get := request(http.MethodGet, "")
+			var response api.LoopConfig
+			if err := json.Unmarshal(get.Body.Bytes(), &response); err != nil || response.Budget == nil {
+				t.Fatalf("missing additive budget response: %s, %v", get.Body, err)
+			}
+			exhausted := tc.reason != ""
+			if response.Budget.Exhausted != exhausted || response.Budget.Resumable == exhausted || response.Budget.ExhaustedReason != string(tc.reason) || response.Budget.EffectiveMaxIterations != configPkg.EffectiveMaxLoopIterations(tc.promptCap, tc.configCap) {
+				t.Fatalf("wrong budget policy: %+v", response.Budget)
+			}
+			if _, err := time.Parse(time.RFC3339Nano, response.Budget.EvaluatedAt); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := ps.Get()
+			for _, body := range []string{`{"enabled":true}`, `{"enabled":true,"reset_counters":false}`} {
+				w := request(http.MethodPatch, body)
+				stored, _ := ps.Get()
+				if exhausted {
+					var env struct {
+						Error struct{ Code, Message string }
+					}
+					_ = json.Unmarshal(w.Body.Bytes(), &env)
+					if w.Code != http.StatusConflict || env.Error.Code != "loop_restart_required" || !strings.Contains(env.Error.Message, "reset_counters:true") {
+						t.Fatalf("exhausted enable response = %d %s", w.Code, w.Body)
+					}
+					beforeJSON, _ := json.Marshal(before)
+					afterJSON, _ := json.Marshal(stored)
+					if string(beforeJSON) != string(afterJSON) || broadcasts != 0 || bootstraps != 0 {
+						t.Fatal("rejected enable mutated state or triggered side effects")
+					}
+				} else if w.Code != http.StatusOK || !stored.Enabled || stored.IterationCount != tc.count || !stored.FirstRunAt.Equal(anchor) || !stored.LastSentAt.Equal(anchor) || stored.LifecycleGeneration != 0 || stored.PendingRestart {
+					t.Fatalf("ordinary resume renewed allowance: %+v, response=%s", stored, w.Body)
+				}
+			}
+			// Redundant user disable preserves the authoritative cap stop and ack.
+			if exhausted {
+				w := request(http.MethodPatch, `{"enabled":false}`)
+				stored, _ := ps.Get()
+				if w.Code != http.StatusOK || stored.StoppedReason != tc.reason || stored.AcknowledgedStoppedReason != tc.reason || !stored.StoppedAt.Equal(anchor) {
+					t.Fatalf("disable erased provenance: %+v, %s", stored, w.Body)
+				}
+			}
+			beforeBootstrap := bootstraps
+			beforeInvalid, _ := ps.Get()
+			invalid := request(http.MethodPatch, `{"enabled":true,"reset_counters":true,"max_iterations":-1}`)
+			afterInvalid, _ := ps.Get()
+			beforeJSON, _ := json.Marshal(beforeInvalid)
+			afterJSON, _ := json.Marshal(afterInvalid)
+			if invalid.Code != http.StatusBadRequest || string(beforeJSON) != string(afterJSON) || bootstraps != beforeBootstrap {
+				t.Fatalf("invalid restart partially persisted or dispatched: %d %s", invalid.Code, invalid.Body)
+			}
+			h.deps.BootstrapOnCompletion = func(string) {
+				bootstraps++
+				stored, _ := store.Loop(sid).Get()
+				if !stored.Enabled || stored.IterationCount != 0 || stored.FirstRunAt != nil || stored.LastSentAt != nil || stored.LifecycleGeneration != 1 || !stored.PendingRestart {
+					t.Errorf("bootstrap saw half-reset state: %+v", stored)
+				}
+			}
+			w := request(http.MethodPatch, `{"enabled":true,"reset_counters":true}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("restart = %d %s", w.Code, w.Body)
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Budget.Exhausted || !response.Budget.Resumable {
+				t.Fatalf("restart response budget: %s, %v", w.Body, err)
+			}
+			stored, _ := ps.Get()
+			if stored.MaxIterations != tc.promptCap || stored.MaxDurationSeconds != tc.duration || stored.PromptName != "task" || stored.Arguments["TASK"] != "preserve" || len(stored.Triggers) != 2 || stored.DelaySeconds != 30 || stored.StoppedReason != "" || stored.AcknowledgedStoppedReason != "" || stored.NextScheduledAt != nil {
+				t.Fatalf("restart changed config/left stale state: %+v", stored)
+			}
+			if bootstraps != beforeBootstrap+1 || runNow != 0 {
+				t.Fatal("PATCH must bootstrap once, not invoke run-now itself")
+			}
+			raw, _ := json.Marshal(stored)
+			if strings.Contains(string(raw), `"budget"`) {
+				t.Fatal("derived budget persisted into loop.json")
+			}
+		})
+	}
+}
+
+func TestHandleSessionLoop_LifecycleStaleAndMisleadingState(t *testing.T) {
+	store, h := newLoopStore(t)
+	const sid = "lifecycle-stale"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	ps := store.Loop(sid)
+	anchor := time.Now().UTC()
+	p := &session.LoopPrompt{Prompt: "iterate", Triggers: []session.LoopTrigger{session.TriggerOnCompletion},
+		MaxDurationSeconds: 3600, FirstRunAt: &anchor, IterationCount: 2, StoppedReason: session.StoppedReasonPausedByUser}
+	if err := ps.RestoreSnapshot(p); err != nil {
+		t.Fatal(err)
+	}
+	get := httptest.NewRecorder()
+	h.HandleSessionLoop(get, httptest.NewRequest(http.MethodGet, "/loop", nil), sid, "")
+	var response api.LoopConfig
+	if err := json.Unmarshal(get.Body.Bytes(), &response); err != nil || response.Budget == nil || !response.Budget.Resumable {
+		t.Fatalf("expected remaining allowance: %s, %v", get.Body, err)
+	}
+	// Move persisted time past exhaustion between GET/confirmation and PATCH.
+	// No clock sleeps or provider interaction. Display reason is not authority.
+	anchor = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, reason := range []session.StoppedReason{"", session.StoppedReasonDisabledByAgent, session.StoppedReasonPausedByUser} {
+		p.StoppedReason = reason
+		if err := ps.RestoreSnapshot(p); err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		h.HandleSessionLoop(w, httptest.NewRequest(http.MethodPatch, "/loop", strings.NewReader(`{"enabled":true}`)), sid, "")
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "loop_restart_required") {
+			t.Fatalf("stale/misleading resume = %d %s", w.Code, w.Body)
+		}
+		get = httptest.NewRecorder()
+		h.HandleSessionLoop(get, httptest.NewRequest(http.MethodGet, "/loop", nil), sid, "")
+		_ = json.Unmarshal(get.Body.Bytes(), &response)
+		if !response.Budget.Exhausted || response.Budget.ExhaustedReason != string(session.StoppedReasonMaxDuration) {
+			t.Fatalf("display reason overrode persisted budget: %+v", response.Budget)
+		}
+		stored, _ := ps.Get()
+		if stored.Enabled || stored.LifecycleGeneration != 0 || stored.IterationCount != 2 || !stored.FirstRunAt.Equal(anchor) {
+			t.Fatal("stale resume silently renewed allowance")
+		}
+	}
+}
+
+func TestHandleSessionLoop_LifecycleResponsePreservesUnknownFields(t *testing.T) {
+	var p session.LoopPrompt
+	if err := json.Unmarshal([]byte(`{"prompt":"keep going","enabled":false,"triggers":["onCompletion"],"future_option":{"keep":true},"max_iterations":0}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	h := New(Deps{LoopMaxIterations: func() int { return 3 }})
+	raw, err := json.Marshal(h.loopResponse(&p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &response); err != nil || string(response["future_option"]) != `{"keep":true}` || response["budget"] == nil {
+		t.Fatalf("response lost custom JSON fields: %s, %v", raw, err)
+	}
+	// max=0 explicitly bypasses the configured default, but not the safeguard.
+	var decoded api.LoopConfig
+	if err := json.Unmarshal(raw, &decoded); err != nil || decoded.Budget.EffectiveMaxIterations != configPkg.GlobalMaxLoopIterations {
+		t.Fatalf("wrong zero-cap policy: %s, %v", raw, err)
+	}
+	persisted, _ := json.Marshal(&p)
+	if strings.Contains(string(persisted), `"budget"`) {
+		t.Fatal("serializing response mutated the persisted prompt")
+	}
 }
 
 // putLoopForTest is a helper that PUTs a loop config via the REST handler and
