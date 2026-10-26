@@ -67,10 +67,9 @@ Order {{ $set }} by these criteria, applied **in this exact order**:
    filtered to unblocked beads; re-check before committing to a choice that no
    blocker appeared in the meantime.{{ else }}A bead with any unmet blocker is not a
    candidate at all — drop it (or mark it blocked) rather than ranking it.{{ end }}
-   Read the edges from `bd dep tree <id>` (or the `bd ready --json` output). Treat
-   **implicit** ordering as binding too: a bead that establishes schema,
-   infrastructure, or shared scaffolding that its siblings build on comes before
-   them even without a declared `blocks` edge.
+   Read the edges from `bd dep tree <id>` (or `bd ready --json`). Treat **implicit**
+   ordering as binding: schema, infrastructure, or shared scaffolding that siblings
+   build on comes first even without a declared `blocks` edge.
 2. **Declared priority.** Among unblocked candidates, order by the tracker's
    declared priority — `critical → high → medium → low`, i.e. `bd`'s numeric
    `priority` **ascending** (`P0` before `P1` before `P2` before `P3`). Priority is
@@ -87,19 +86,15 @@ Order {{ $set }} by these criteria, applied **in this exact order**:
    only to a genuine last child: verify with
    `bd list --parent <epic> --status open,in_progress,blocked` that no other
    unfinished child remains — do **not** infer it from `bd dep tree`, which shows
-   dependency edges rather than epic membership. This
-   exists because epic tails are usually low-priority chores ("document XYZ",
-   "test ABC") that block nothing, so they lose every other criterion and the epic
-   stays open indefinitely.
+   dependency edges rather than epic membership. Epic tails are usually low-priority
+   chores that lose every other criterion, so the epic would stay open indefinitely.
 3. **Epic completion.** Break remaining ties (including ties created by the
    promotion above) in favour of the candidate that leaves its epic closest to
    done — fewest open siblings remaining after it closes. A bead with no parent
-   epic is treated as "one remaining", i.e. it neither wins nor loses this
-   criterion against a genuine last child. Prefer **finishing** a partly-done epic
-   over opening a new front.
-4. **Blocking leverage.** Then break ties by how much each candidate unblocks —
-   the number of beads it blocks, directly and transitively. Higher leverage first:
-   finishing it frees the most downstream work.
+   epic is "one remaining": it neither wins nor loses this criterion. Prefer
+   **finishing** a partly-done epic over opening a new front.
+4. **Blocking leverage.** Then break ties by how much each candidate unblocks,
+   directly and transitively; finishing it frees the most downstream work.
 5. **Readiness to start.** Remaining ties go to the candidate that can be started
    immediately with no setup{{ if .Deterministic }}, and any tie still standing is
    broken by **bead ID ascending** so the ordering is reproducible across runs{{ end }}.

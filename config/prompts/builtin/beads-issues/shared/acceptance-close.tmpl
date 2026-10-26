@@ -33,8 +33,12 @@ This is one bounded verification attempt, not a repair loop. Do not run implemen
 inline. Do not close from terminal labels, prior comments, a stopped child, or the wait tool's
 `success`/`completed` wrapper.
 
-1. Reload the effective ticket, children and blockers. If closed, report and stop. If blocked,
-   deferred, future `defer_until`, `needs-human`, children remain open, or human/external sign-off is required, leave open.
+1. Reload the effective ticket, bead children and blockers. If closed, report and stop. If blocked,
+   deferred, future `defer_until`, `needs-human`, bead children remain open, or human/external
+   sign-off is required, leave open. A Mitto child conversation that has not reported is not an open
+   bead child by itself: reconcile it (`mitto_conversation_get`, `mitto_conversation_history`, then
+   `mitto_conversation_send_prompt` a concrete query and `mitto_children_tasks_wait`) before
+   deferring, and record what you asked and what is still missing.
    {{- $requireTerminalLabel := ne .Args.RequireTerminalLabel "false" }}
    {{- if $requireTerminalLabel }}
    Confirm the terminal label is `fixed` (bug) or `verified` (feature/task/chore); otherwise leave open.

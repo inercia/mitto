@@ -37,9 +37,8 @@ prompt: |
   Never push automatically. Commit task paths/hunks only; preserve unrelated staging/conventions.
   A dedicated independent verifier keeps its phase's narrower target, permissions, and stop
   condition; **Start work is never its continuation**. A normal feature review phase continues
-  with Start work in this conversation so it can process the resulting label and, when configured,
-  coordinate acceptance closure. This prompt authorizes that workflow,
-  including phase dispatch and the acceptance coordinator it defines.
+  with Start work in this conversation to process the resulting label and, when configured,
+  coordinate acceptance closure.
   {{ if not $commit }}Do not commit; report uncommitted files.{{ end }}
   {{ if and (ne $close "Ask") (ne $close "Leave open") (ne $close "Verify and close") }}Invalid ClosePolicy: report and stop.{{ end }}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
@@ -63,7 +62,7 @@ prompt: |
   and wait for actual resolution; never clear blockers yourself.
 
   ## Choose work and link
-  Parents: inspect children/dependencies; exclude closed/done, in-progress and transitively blocked.
+  Parents: inspect children/dependencies; exclude closed/done, in-progress, transitively blocked.
   If none are workable, use the blocked handoff above. Rank; ask `mitto_ui_options` with free
   text, recommending the top child; for independent children, offer together and each individually.
   Wait; work selected children only, leaving parent open. Work non-epic leaves directly.
@@ -93,22 +92,21 @@ prompt: |
   | bug | `fixed`; else `reproduced`; else `researched`; else `implementation-refined`; else | Done; Bug fix — fix phase; Bug fix — reproduce phase; Bug fix — investigate phase (research-only); Bug fix — investigate phase |
   | feature/task/chore | `verified`; else `tested`; else `implemented`; else `planned`; else `implementation-refined`; else | Done; Feature — review phase; Feature — test phase; Feature — implement phase; Feature — plan phase (label-only); Feature — plan phase |
 
-  `tested` routes to Review only once per state: a failed review must record
-  NOT VERIFIED and regress `tested` (plus `implemented` when code/docs must change).
-  Never re-dispatch against unchanged labels — if the latest `Review:` comment says
-  NOT VERIFIED while `tested` remains, remove `tested` and dispatch Test/Implement.
+  `tested` routes to Review only once per state: a failed review must record NOT VERIFIED and
+  regress `tested` (plus `implemented` when code/docs must change). Never re-dispatch against
+  unchanged labels: if the latest `Review:` comment says NOT VERIFIED while `tested` remains,
+  remove `tested` and dispatch Test/Implement.
 
-  Before dispatch, propose it with `mitto_ui_options` (`self_id`, recommended
-  `Continue to <phase>` then `Not now`, free text enabled, 60-second timeout); decline or changed
-  instructions stops dispatch/follow-up. At first Fix/Implement with `implementation-refined`,
-  `researched`, or `planned`, include latest `Investigation:`/`Plan:` decomposition, instructions,
-  and no-touch constraints. Never ask twice. Record feedback with `bd comment`;
-  return to investigation/planning. Timeout:
+  Before dispatch, propose it with `mitto_ui_options` (`self_id`, recommended `Continue to <phase>`,
+  then `Not now`, free text, 60-second timeout); decline or changed instructions stops dispatch/follow-up. At
+  first Fix/Implement with `implementation-refined`, `researched`, or `planned`, include latest
+  `Investigation:`/`Plan:` decomposition, instructions, and no-touch constraints. Never ask twice.
+  Record feedback with `bd comment`; return to investigation/planning. Timeout:
   {{ template "_shared/timeout-default-continue" . }}
   On successful approved/timed-out dispatch, send the selected named phase to `self`:
   `{ "IssueID": "<effective-id>", "SubmitStrategy": "{{ if $commit }}Commit{{ else }}None{{ end }}", "AdditionalInstructions": "<handoff>" }`.
-  Handoff: user clarifications verbatim with source; agent inferences/proposals separately,
-  never as user decisions. Carry these forward on every phase dispatch. For Review,
+  Handoff: user clarifications verbatim with source; agent inferences separately, never as user
+  decisions. Carry forward on every phase dispatch. For Review,
   require a failed review to regress labels; never stop unchanged, then queue named **Start work** with that same ID and arguments
   `{ "IssueID": "<effective-id>", "Commit": "{{ $commit }}", "ClosePolicy": "{{ $close }}" }`.
   Never queue if blocked, declined, dispatch failed, or terminal. Parallel independent children:
@@ -128,7 +126,7 @@ prompt: |
   ## Done
   `fixed`/`verified` is terminal: report delivered work from phase comments.
   {{ if $commit -}}
-  After checks pass, commit attributable leftovers (including reproduction/tests), scoped above.
+  After checks pass, commit attributable leftovers (reproduction/tests included), scoped above.
   No empty commits; uncertainty/failure: report and stop.
   {{- else -}}
   Report uncommitted files; {{ if eq $close "Verify and close" }}the independent gate still applies{{ else }}explicit approval may still close{{ end }}.
@@ -140,7 +138,7 @@ prompt: |
   options: "Yes, close it" / "No, keep it open", timeout_seconds: 60).
   Only an explicit **Yes, close it** permits `bd close <effective-id> --reason "<delivered work>"`.
   Timeout (`timed_out: true`), cancellation, decline, free text, or tool errors leave it open.
-  Never default-continue closure. Report close errors.
+  Never default-continue closure; report close errors.
   {{- else if eq $close "Verify and close" }}
   {{ template "beads-issues/shared/acceptance-close" . }}
   {{- else -}}
@@ -156,8 +154,8 @@ prompt: |
   Skip deletion while verification is pending or unsuccessful; do not delete a live verifier.{{ end }}
 
   {{ if and $target (eq $close "Verify and close") -}}
-  Only after this ticket's acceptance PASS and confirmed closure, with no pending handoffs or live
-  children, may you offer conversation cleanup. Otherwise keep it and report the incomplete outcome.
+  Offer conversation cleanup only after this ticket's acceptance PASS and closure, with no pending
+  handoffs or live children. Otherwise keep it and report the incomplete outcome.
   {{- else }}
   {{ template "_shared/offer-delete-conversation" . }}
   {{- end }}

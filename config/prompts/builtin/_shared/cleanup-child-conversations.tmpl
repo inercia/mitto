@@ -12,6 +12,11 @@
 
       {{ template "_shared/cleanup-child-conversations" . }}
 */}}
-Clean up any child conversations that have reported back and are no longer needed with
+Clean up any child conversations that reported back and are no longer needed with
 `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")`.
 Leave any child that is still working, or that you did not spawn, untouched.
+
+A child that is idle without a report is unresolved, not finished: check `mitto_conversation_get`,
+read `mitto_conversation_history` (its last messages may already hold the report — never claim it
+never reported without reading them), then `mitto_conversation_send_prompt` a concrete query and
+`mitto_children_tasks_wait` it; act on the answer. Never defer on `agent_idle`/timeout alone.
