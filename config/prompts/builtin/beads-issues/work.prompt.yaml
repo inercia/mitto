@@ -93,6 +93,11 @@ prompt: |
   | bug | `fixed`; else `reproduced`; else `researched`; else `implementation-refined`; else | Done; Bug fix — fix phase; Bug fix — reproduce phase; Bug fix — investigate phase (research-only); Bug fix — investigate phase |
   | feature/task/chore | `verified`; else `tested`; else `implemented`; else `planned`; else `implementation-refined`; else | Done; Feature — review phase; Feature — test phase; Feature — implement phase; Feature — plan phase (label-only); Feature — plan phase |
 
+  `tested` routes to Review only once per state: a failed review must record
+  NOT VERIFIED and regress `tested` (plus `implemented` when code/docs must change).
+  Never re-dispatch against unchanged labels — if the latest `Review:` comment says
+  NOT VERIFIED while `tested` remains, remove `tested` and dispatch Test/Implement.
+
   Before dispatch, propose it with `mitto_ui_options` (`self_id`, recommended
   `Continue to <phase>` then `Not now`, free text enabled, 60-second timeout); decline or changed
   instructions stops dispatch/follow-up. At first Fix/Implement with `implementation-refined`,
@@ -103,8 +108,8 @@ prompt: |
   On successful approved/timed-out dispatch, send the selected named phase to `self`:
   `{ "IssueID": "<effective-id>", "SubmitStrategy": "{{ if $commit }}Commit{{ else }}None{{ end }}", "AdditionalInstructions": "<handoff>" }`.
   Handoff: user clarifications verbatim with source; agent inferences/proposals separately,
-  never as user decisions. Carry these forward on every phase dispatch,
-  then queue named **Start work** with that same ID and arguments
+  never as user decisions. Carry these forward on every phase dispatch. For Review,
+  require a failed review to regress labels; never stop unchanged, then queue named **Start work** with that same ID and arguments
   `{ "IssueID": "<effective-id>", "Commit": "{{ $commit }}", "ClosePolicy": "{{ $close }}" }`.
   Never queue if blocked, declined, dispatch failed, or terminal. Parallel independent children:
   one conversation each, named Start work with arguments

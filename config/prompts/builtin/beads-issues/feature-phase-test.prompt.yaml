@@ -72,7 +72,8 @@ prompt: |
 
   Read its `labels`, acceptance criteria, and prior comments (especially the
   `Plan:` and `Implementation:` comments — they tell you the approach and what was
-  built). If `tested` is already present, this phase's work is already done —
+  built — and the latest NOT VERIFIED `Review:` comment, which lists the exact gaps
+  this re-entry must close). If `tested` is already present, this phase's work is already done —
   `bd comment` a note that the phase re-ran redundantly and stop **without**
   re-adding the label.
 

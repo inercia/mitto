@@ -192,6 +192,11 @@ prompt: |
   - `implementation-refined` present (by "Investigate"), `planned` absent → **Step 3a** (the Plan phase only adds `planned` — it does not re-plan), then Implement.
   - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: dispatch Plan/Design.**
 
+  A phase that ends without changing the labels it was dispatched to advance is a
+  stall, not a retry: never re-dispatch it against the same state. A failed Review in
+  particular must leave `tested` removed (or deferred) — if it left `tested` unchanged,
+  regress `tested` yourself and dispatch Test/Implement, or go to Step 4.
+
   If the driver itself is unable to load state or resolve the target autonomously, go
   to **Step 4 (Blocked → Defer + Handoff)** instead of dispatching. The phase prompts
   themselves also handle their own in-phase blockers via their Step 4.
@@ -269,13 +274,15 @@ prompt: |
   )
   ```
 
-  Then end this turn. The Review phase runs on the **Reasoning** tier, self-reviews
-  build/lint/docs/acceptance-criteria/downstream-impact — looping back **without**
-  advancing the label if any gap is found — and once genuinely satisfied records a
-  `Review:` comment, adds the `verified`
-  label{{ if $commit }}, commits any review fix-ups{{ end }}, optionally
-  closes the bead, and stops. The next scheduled run of this driver will observe
-  `verified` and take the Done branch (Step 3e).
+  Then end this turn. The Review phase runs on the **Reasoning** tier and
+  self-reviews build/lint/docs/acceptance-criteria/downstream-impact. When a gap is
+  found it records a NOT VERIFIED `Review:` comment and **regresses the labels**
+  (`tested`, plus `implemented` when code/docs must change) so the next run
+  dispatches Test or Implement instead of Review again. Once genuinely satisfied it
+  adds `verified`{{ if $commit }}, commits any review fix-ups{{ end }}, and stops.
+  The next scheduled run observes the new labels: `tested` absent routes forward,
+  `verified` takes the Done branch (Step 3e). Never dispatch Review while `tested` is
+  unchanged from the last review.
 
   ### Step 3e — Done (`verified` present) — handled inline, EVALUATE FIRST
 

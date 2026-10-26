@@ -73,7 +73,8 @@ prompt: |
 
   Read its `labels` array and prior comments (especially the plan-phase `Plan:`
   comment recorded when `planned` was added — it tells you the approach and design
-  decisions). If `implemented` is already present, this phase's work is already
+  decisions — and the latest NOT VERIFIED `Review:` comment, which lists the exact
+  code/docs gaps this re-entry must close). If `implemented` is already present, this phase's work is already
   done — `bd comment` a note that the phase re-ran redundantly and stop **without**
   re-adding the label.
 

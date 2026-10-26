@@ -71,9 +71,11 @@ prompt: |
   ```
 
   Read its `labels`, acceptance criteria, and prior comments (`Plan:`,
-  `Implementation:`, `Testing:`). If `verified` is already present, this phase's work
-  is already done — `bd comment` a note that the phase re-ran redundantly and stop
-  **without** re-adding the label.
+  `Implementation:`, `Testing:`, `Review:`). If `verified` is already present, this
+  phase's work is already done — `bd comment` a note that the phase re-ran redundantly
+  and stop **without** re-adding the label. If a prior `Review:` comment records
+  NOT VERIFIED while `tested` is still present, a previous run stalled without
+  regressing: do not repeat that review — regress per Step 2 before stopping.
 
   ## Step 2 — Self-review
 
@@ -92,16 +94,32 @@ prompt: |
   - **No downstream breakage** — callers, related tests, and configs that reference
     the changed code still work.
 
-  If **any** gap is found, do **NOT** advance the `verified` label — this phase must
-  loop back rather than paper over the gap:
+  If **any** gap is found, do **NOT** add `verified`. Never stop with the labels
+  unchanged: `tested` without `verified` is exactly the state that re-dispatches this
+  review, so an unchanged exit is an infinite review loop, not a retry.
 
   - If you can fix it yourself (a small correction, a missing doc update, a lint
     fix), fix it now and re-check.
-  - If it requires re-implementing or re-testing a meaningful chunk of work, record
-    the gap via `bd comment` and stop **without** advancing the label — the driver's
-    next scheduled run will re-dispatch this same review phase (since `tested` is
-    still present and `verified` is still absent) after work resumes, or defer via
-    **Step 4** if the gap needs user input.
+  - Otherwise **record the verdict, then regress the state machine** by the smallest
+    step that can close the gap:
+
+    ```bash
+    bd comment {{ $target }} "Review [tier: Reasoning]: NOT VERIFIED — <gap and the evidence it needs>. Regressed: <labels removed>."
+    # choose ONE — the shallowest regression that can close the gap:
+    bd update {{ $target }} --remove-label tested                              # tests/evidence gap
+    # OR
+    bd update {{ $target }} --remove-label tested --remove-label implemented   # code/docs gap
+    ```
+
+    - **Tests/evidence only** → remove `tested`, leaving `implemented`: the next run
+      dispatches the Test phase.
+    - **Implementation, docs, or acceptance behavior** → remove `tested` and
+      `implemented`, leaving `planned`: the next run dispatches the Implement phase.
+    - **Needs a user decision or an external action** → defer via **Step 4** instead
+      of regressing.
+
+    Post the comment **before** removing labels so the reason survives the state
+    change. Never remove `planned`; it is the floor of this state machine.
 
   ## Step 3 — Record, advance the label{{ if $commit }}, and commit{{ end }}
 
@@ -157,8 +175,12 @@ prompt: |
 
   - **One stage only.** This phase advances at most one label (`verified`). It never
     closes the bead; the driver's child-aware Done branch always self-terminates.
-  - **Never rubber-stamp.** Any unmet check means the label must NOT advance — loop
-    back or defer, never guess that it is "probably fine".
+  - **Never rubber-stamp.** Any unmet check means the label must NOT advance — regress
+    or defer, never guess that it is "probably fine".
+  - **Always leave a decision.** Every run ends in exactly one of: `verified` added;
+    `tested` removed after a NOT VERIFIED comment (plus `implemented` when code, docs,
+    or behavior must change); or a deferral. Never end on the unchanged `tested`
+    state — that is the loop this phase must break.
   {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" false
       "TagNoun"         "summary"
