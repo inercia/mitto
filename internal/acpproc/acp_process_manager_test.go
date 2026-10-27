@@ -2572,6 +2572,92 @@ func TestAuxiliaryModelForLog(t *testing.T) {
 	}
 }
 
+func TestResolveAuxiliaryModel_PolicyIsolationAndSafeFallback(t *testing.T) {
+	var policies config.HiddenModelPolicies
+	initial, err := policies.Prepare([]config.ACPServer{{Name: "server-a"}, {Name: "server-b", HiddenModels: []string{"^new$"}}})
+	if err != nil || !policies.Publish(initial) {
+		t.Fatalf("publish initial policy: %v", err)
+	}
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+	m.HiddenModelPolicies = &policies
+	raw := &conversation.SessionModelState{CurrentModelId: "old", AvailableModels: []conversation.ModelInfo{
+		{ModelId: "old", Name: "Old"}, {ModelId: "new", Name: "New"},
+	}}
+
+	// Same process implementation must not leak server-b's rule into server-a.
+	if target, shouldSet, err := m.resolveAuxiliaryModel(nil, raw, "server-a", "ws-a", "title-gen"); err != nil || target != "old" || shouldSet {
+		t.Fatalf("server-a resolution = (%q, %t, %v), want current old without switch", target, shouldSet, err)
+	}
+	if target, shouldSet, err := m.resolveAuxiliaryModel(nil, raw, "server-b", "ws-b", "title-gen"); err != nil || target != "old" || shouldSet {
+		t.Fatalf("server-b resolution = (%q, %t, %v), want current old without switch", target, shouldSet, err)
+	}
+
+	// A later server-a publication hides its default. A cached state reuses its
+	// retained raw catalog, selects the eligible fallback, and never uses server-b.
+	next, err := policies.Prepare([]config.ACPServer{{Name: "server-a", HiddenModels: []string{"^old$"}}, {Name: "server-b", HiddenModels: []string{"^new$"}}})
+	if err != nil || !policies.Publish(next) {
+		t.Fatalf("publish replacement policy: %v", err)
+	}
+	cached := &auxiliarySessionState{rawModels: cloneAuxiliaryModelState(raw), modelID: "old"}
+	if target, shouldSet, err := m.resolveAuxiliaryModel(nil, cached.rawModelState(), "server-a", "ws-a", "title-gen"); err != nil || target != "new" || !shouldSet {
+		t.Fatalf("cached server-a resolution after hide = (%q, %t, %v), want eligible new switch", target, shouldSet, err)
+	}
+	if target, shouldSet, err := m.resolveAuxiliaryModel(nil, cached.rawModelState(), "server-b", "ws-b", "title-gen"); err != nil || target != "old" || shouldSet {
+		t.Fatalf("server-b resolution after server-a hide = (%q, %t, %v), want old without switch", target, shouldSet, err)
+	}
+}
+
+func TestResolveAuxiliaryModel_HiddenSelectorsRemainStrict(t *testing.T) {
+	var policies config.HiddenModelPolicies
+	snapshot, err := policies.Prepare([]config.ACPServer{{Name: "server", HiddenModels: []string{"^old$"}}})
+	if err != nil || !policies.Publish(snapshot) {
+		t.Fatalf("publish policy: %v", err)
+	}
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+	m.HiddenModelPolicies = &policies
+	raw := &conversation.SessionModelState{CurrentModelId: "new", AvailableModels: []conversation.ModelInfo{
+		{ModelId: "old", Name: "Old"}, {ModelId: "new", Name: "New"},
+	}}
+	ws := &config.WorkspaceSettings{AuxiliaryModelSelection: &config.ACPServerConstraint{MatchMode: "exact", Pattern: "Old"}}
+	if _, _, err := m.resolveAuxiliaryModel(ws, raw, "server", "ws", "title-gen"); err == nil {
+		t.Fatal("hidden strict selector unexpectedly resolved")
+	} else {
+		var unavailable *mittoAcp.AuxiliaryModelUnavailableError
+		if !errors.As(err, &unavailable) {
+			t.Fatalf("hidden strict selector error = %v, want AuxiliaryModelUnavailableError", err)
+		}
+	}
+
+	allHidden, err := policies.Prepare([]config.ACPServer{{Name: "server", HiddenModels: []string{".*"}}})
+	if err != nil || !policies.Publish(allHidden) {
+		t.Fatalf("publish all-hidden policy: %v", err)
+	}
+	if _, _, err := m.resolveAuxiliaryModel(ws, raw, "server", "ws", "title-gen"); err == nil {
+		t.Fatal("strict selector unexpectedly resolved against all-hidden catalog")
+	}
+}
+
+func TestAuxiliarySessionState_RequiresMatchingProcessProvenance(t *testing.T) {
+	process := &SharedACPProcess{config: SharedACPProcessConfig{ACPServer: "server", WorkingDir: "/workspace"}, generation: 3}
+	state := &auxiliarySessionState{
+		workspaceUUID:     "ws",
+		configuredServer:  "server",
+		sessionFolder:     "/workspace",
+		process:           process,
+		processGeneration: 3,
+		rawModels:         &conversation.SessionModelState{CurrentModelId: "model"},
+	}
+	if !state.matchesProcess(process, "ws") {
+		t.Fatal("matching process provenance was rejected")
+	}
+	process.generation++
+	if state.matchesProcess(process, "ws") {
+		t.Fatal("replaced process generation was accepted for cached auxiliary session")
+	}
+}
+
 // TestGetOrCreateAuxiliarySession_HighActiveRPCsBails is the mitto-9gt
 // reproduction: during a parallel fan-out on a not-yet-saturated shared ACP
 // process, non-essential auxiliary purposes (follow-up, keepalive, mcp-check,

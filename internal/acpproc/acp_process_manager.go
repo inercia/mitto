@@ -291,13 +291,19 @@ type auxSessionKey struct {
 
 // auxiliarySessionState tracks an auxiliary session's state.
 type auxiliarySessionState struct {
-	mu               sync.Mutex // Serializes requests to this session
-	modelMu          sync.RWMutex
-	sessionID        string
-	client           *auxiliaryClient // Collects responses
-	lastUsed         time.Time
-	modelID          string
-	instructionsSent bool // Tracks if system instructions have been sent to this session
+	mu                sync.Mutex   // Serializes requests to this session
+	modelMu           sync.RWMutex // Guards the model state and creation provenance below.
+	sessionID         string
+	client            *auxiliaryClient // Collects responses
+	lastUsed          time.Time
+	modelID           string
+	rawModels         *conversation.SessionModelState
+	workspaceUUID     string
+	configuredServer  string
+	sessionFolder     string
+	process           *SharedACPProcess
+	processGeneration int
+	instructionsSent  bool // Tracks if system instructions have been sent to this session
 }
 
 // auxiliaryOperationGate serializes one-shot follow-up session lifecycles per
@@ -1639,11 +1645,30 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		purpose:       purpose,
 	}
 
-	// ── First check: return early if the session already exists ──────────────────
+	// ── First check: reconcile a matching cached session before reuse ─────────────
 	m.auxMu.Lock()
 	if state, ok := m.auxSessions[key]; ok {
 		m.auxMu.Unlock()
-		return state, nil
+		process := m.GetProcess(workspaceUUID)
+		if process != nil && state.matchesProcess(process, workspaceUUID) {
+			var ws *config.WorkspaceSettings
+			if m.WorkspaceConfigProvider != nil {
+				ws = m.WorkspaceConfigProvider(workspaceUUID)
+			}
+			if err := m.reconcileAuxiliarySession(ctx, workspaceUUID, purpose, process, state, ws); err != nil {
+				return nil, err
+			}
+			return state, nil
+		}
+		// A cached session belongs to a replaced process or different effective
+		// workspace/server provenance. Its model observation cannot authorize reuse.
+		m.auxMu.Lock()
+		if m.auxSessions[key] == state {
+			delete(m.auxSessions, key)
+		}
+		m.auxMu.Unlock()
+		// Continue through the normal create path with a fresh session/new catalog.
+		m.auxMu.Lock()
 	}
 	// Get-or-create the per-key creation mutex while still under auxMu.
 	createMu, ok := m.auxCreateMu[key]
@@ -1910,58 +1935,30 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		initialModelID = sessionHandle.Models.CurrentModelId
 	}
 	state := &auxiliarySessionState{
-		sessionID: sessionHandle.SessionID,
-		client:    newAuxiliaryClient(),
-		lastUsed:  time.Now(),
-		modelID:   initialModelID,
+		sessionID:         sessionHandle.SessionID,
+		client:            newAuxiliaryClient(),
+		lastUsed:          time.Now(),
+		modelID:           initialModelID,
+		rawModels:         cloneAuxiliaryModelState(sessionHandle.Models),
+		workspaceUUID:     workspaceUUID,
+		configuredServer:  process.config.ACPServer,
+		sessionFolder:     auxCwd,
+		process:           process,
+		processGeneration: catalogGen,
 	}
 
-	// A configured auxiliary model is a safety requirement, not a preference:
-	// do not register or publish this session until the agent confirms it.
 	var ws *config.WorkspaceSettings
 	if m.WorkspaceConfigProvider != nil {
 		ws = m.WorkspaceConfigProvider(workspaceUUID)
 	}
-	configured := ws != nil && (ws.AuxiliaryModelProfile != "" || ws.AuxiliaryModelTag != "" || ws.AuxiliaryModelSelection != nil)
-	selector := "workspace"
-	if !configured && m.GlobalAuxModelTagProvider != nil && strings.TrimSpace(m.GlobalAuxModelTagProvider()) != "" {
-		configured = true
-		selector = "global tag " + strings.TrimSpace(m.GlobalAuxModelTagProvider())
-	}
-	if configured {
-		pause := func(modelID, reason string, cause error) (*auxiliarySessionState, error) {
-			cleanupCtx, cleanupCancel := context.WithTimeout(m.ctx, 2*time.Second)
-			_ = process.Cancel(cleanupCtx, sessionHandle.SessionID)
-			cleanupCancel()
-			modelErr := &mittoAcp.AuxiliaryModelUnavailableError{Workspace: workspaceUUID, Purpose: purpose, Selector: selector, ModelID: modelID, Reason: reason}
-			if cause != nil {
-				return nil, fmt.Errorf("%w: %v", modelErr, cause)
-			}
-			return nil, modelErr
-		}
-		if sessionHandle.Models == nil || sessionHandle.Models.Synthesized {
-			return pause("", "agent did not provide a usable model catalog", nil)
-		}
-		constraint := m.resolveAuxConstraint(ws, sessionHandle.Models, workspaceUUID, purpose)
-		if constraint == nil || constraint.Pattern == "" {
-			return pause("", "configured selector does not resolve against the agent model catalog", nil)
-		}
-		matched, shouldSet := conversation.ResolveAuxModelSwitch(constraint, sessionHandle.Models)
-		if matched == "" {
-			return pause("", "configured selector matches no model in the agent catalog", nil)
-		}
-		if shouldSet {
-			setCtx, setCancel := context.WithTimeout(ctx, setModelAsyncCallerBudget)
-			setErr := process.SetSessionModel(setCtx, sessionHandle.SessionID, matched)
-			setCancel()
-			if setErr != nil {
-				if m.logger != nil {
-					m.logger.Warn("Auxiliary session paused: configured model was not confirmed", "workspace_uuid", workspaceUUID, "purpose", purpose, "model_id", matched, "error", setErr)
-				}
-				return pause(matched, "agent rejected or did not confirm the configured model", setErr)
-			}
-			state.setModelID(matched)
-		}
+	// A configured selector and a policy-hidden default are both safety
+	// requirements. Do not register or publish this session until a safe model is
+	// either already reported or confirmed by the agent.
+	if err := m.reconcileAuxiliarySession(ctx, workspaceUUID, purpose, process, state, ws); err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(m.ctx, 2*time.Second)
+		_ = process.Cancel(cleanupCtx, sessionHandle.SessionID)
+		cleanupCancel()
+		return nil, err
 	}
 
 	// Register the session with the multiplexer
@@ -2025,7 +2022,162 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 func (s *auxiliarySessionState) setModelID(modelID string) {
 	s.modelMu.Lock()
 	s.modelID = modelID
+	if s.rawModels != nil {
+		s.rawModels.CurrentModelId = modelID
+	}
 	s.modelMu.Unlock()
+}
+
+func cloneAuxiliaryModelState(models *conversation.SessionModelState) *conversation.SessionModelState {
+	if models == nil {
+		return nil
+	}
+	copy := *models
+	copy.AvailableModels = append([]conversation.ModelInfo(nil), models.AvailableModels...)
+	return &copy
+}
+
+func (s *auxiliarySessionState) matchesProcess(process *SharedACPProcess, workspaceUUID string) bool {
+	if process == nil {
+		return false
+	}
+	folder := process.WorkingDir()
+	if folder == "" {
+		folder = "."
+	}
+	s.modelMu.RLock()
+	defer s.modelMu.RUnlock()
+	return s.process == process &&
+		s.workspaceUUID == workspaceUUID &&
+		s.configuredServer == process.config.ACPServer &&
+		s.sessionFolder == folder &&
+		s.processGeneration == process.Generation()
+}
+
+func (s *auxiliarySessionState) rawModelState() *conversation.SessionModelState {
+	s.modelMu.RLock()
+	defer s.modelMu.RUnlock()
+	return cloneAuxiliaryModelState(s.rawModels)
+}
+
+func (m *ACPProcessManager) auxiliaryPolicy(server string) *config.HiddenModelPolicy {
+	if m.HiddenModelPolicies == nil {
+		return nil
+	}
+	if snapshot := m.HiddenModelPolicies.Snapshot(); snapshot != nil {
+		return snapshot.Policy(server)
+	}
+	return nil
+}
+
+func (m *ACPProcessManager) auxiliarySelector(ws *config.WorkspaceSettings) (bool, string) {
+	if ws != nil && (ws.AuxiliaryModelProfile != "" || ws.AuxiliaryModelTag != "" || ws.AuxiliaryModelSelection != nil) {
+		return true, "workspace"
+	}
+	if m.GlobalAuxModelTagProvider != nil {
+		if tag := strings.TrimSpace(m.GlobalAuxModelTagProvider()); tag != "" {
+			return true, "global tag " + tag
+		}
+	}
+	return false, ""
+}
+
+func (m *ACPProcessManager) auxiliaryModelUnavailable(workspaceUUID, purpose, selector, modelID, reason string, cause error) error {
+	err := &mittoAcp.AuxiliaryModelUnavailableError{Workspace: workspaceUUID, Purpose: purpose, Selector: selector, ModelID: modelID, Reason: reason}
+	if cause != nil {
+		return fmt.Errorf("%w: %v", err, cause)
+	}
+	return err
+}
+
+// resolveAuxiliaryModel filters a raw agent catalog through the policy of the
+// configured server before resolving workspace/profile/tag selection. With an
+// active policy, an unknown or hidden agent default cannot survive without an
+// eligible catalog fallback.
+func (m *ACPProcessManager) resolveAuxiliaryModel(ws *config.WorkspaceSettings, raw *conversation.SessionModelState, configuredServer, workspaceUUID, purpose string) (string, bool, error) {
+	configured, selector := m.auxiliarySelector(ws)
+	policy := m.auxiliaryPolicy(configuredServer)
+	if policy == nil {
+		if !configured {
+			if raw == nil {
+				return "", false, nil
+			}
+			return raw.CurrentModelId, false, nil
+		}
+		if raw == nil || raw.Synthesized {
+			return "", false, m.auxiliaryModelUnavailable(workspaceUUID, purpose, selector, "", "agent did not provide a usable model catalog", nil)
+		}
+		constraint := m.resolveAuxConstraint(ws, raw, workspaceUUID, purpose)
+		if constraint == nil || constraint.Pattern == "" {
+			return "", false, m.auxiliaryModelUnavailable(workspaceUUID, purpose, selector, "", "configured selector does not resolve against the agent model catalog", nil)
+		}
+		matched, shouldSet := conversation.ResolveAuxModelSwitch(constraint, raw)
+		if matched == "" {
+			return "", false, m.auxiliaryModelUnavailable(workspaceUUID, purpose, selector, "", "configured selector matches no model in the agent catalog", nil)
+		}
+		return matched, shouldSet, nil
+	}
+	if raw == nil || raw.Synthesized || raw.CurrentModelId == "" {
+		return "", false, m.auxiliaryModelUnavailable(workspaceUUID, purpose, selector, "", "agent did not provide a verifiable model catalog and current model", nil)
+	}
+	currentKnown := false
+	for _, model := range raw.AvailableModels {
+		if model.ModelId == raw.CurrentModelId {
+			currentKnown = true
+			break
+		}
+	}
+	if !currentKnown {
+		return "", false, m.auxiliaryModelUnavailable(workspaceUUID, purpose, selector, raw.CurrentModelId, "agent current model is absent from the advertised catalog", nil)
+	}
+	eligible := *raw
+	eligible.AvailableModels = config.FilterHiddenModels(policy, raw.AvailableModels, func(model conversation.ModelInfo) (string, string) {
+		return model.ModelId, model.Name
+	})
+	if len(eligible.AvailableModels) == 0 {
+		return "", false, m.auxiliaryModelUnavailable(workspaceUUID, purpose, selector, raw.CurrentModelId, "all advertised models are hidden by policy", nil)
+	}
+	if configured {
+		constraint := m.resolveAuxConstraint(ws, &eligible, workspaceUUID, purpose)
+		if constraint == nil || constraint.Pattern == "" {
+			return "", false, m.auxiliaryModelUnavailable(workspaceUUID, purpose, selector, "", "configured selector does not resolve against the eligible model catalog", nil)
+		}
+		matched, shouldSet := conversation.ResolveAuxModelSwitch(constraint, &eligible)
+		if matched == "" {
+			return "", false, m.auxiliaryModelUnavailable(workspaceUUID, purpose, selector, "", "configured selector matches no eligible model", nil)
+		}
+		return matched, shouldSet, nil
+	}
+	for _, model := range eligible.AvailableModels {
+		if model.ModelId == raw.CurrentModelId {
+			return model.ModelId, false, nil
+		}
+	}
+	return eligible.AvailableModels[0].ModelId, true, nil
+}
+
+func (m *ACPProcessManager) reconcileAuxiliarySession(ctx context.Context, workspaceUUID, purpose string, process *SharedACPProcess, state *auxiliarySessionState, ws *config.WorkspaceSettings) error {
+	if !state.matchesProcess(process, workspaceUUID) {
+		return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", "", "auxiliary session provenance no longer matches the shared process", nil)
+	}
+	target, shouldSet, err := m.resolveAuxiliaryModel(ws, state.rawModelState(), process.config.ACPServer, workspaceUUID, purpose)
+	if err != nil || !shouldSet {
+		return err
+	}
+	setCtx, setCancel := context.WithTimeout(ctx, setModelAsyncCallerBudget)
+	setErr := process.SetSessionModel(setCtx, state.sessionID, target)
+	setCancel()
+	if setErr != nil {
+		if m.logger != nil {
+			m.logger.Warn("Auxiliary session paused: eligible model was not confirmed", "workspace_uuid", workspaceUUID, "purpose", purpose, "model_id", target, "error", setErr)
+		}
+		return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", target, "agent rejected or did not confirm the eligible model", setErr)
+	}
+	if !state.matchesProcess(process, workspaceUUID) {
+		return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", target, "shared process changed while confirming the eligible model", nil)
+	}
+	state.setModelID(target)
+	return nil
 }
 
 func (s *auxiliarySessionState) modelForLog() (string, bool) {
