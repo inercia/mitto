@@ -217,6 +217,16 @@ type configDeps interface {
 // configManager is a stateless collaborator owning session-config + model-baseline logic.
 type configManager struct{}
 
+type policyBaselinePersistence interface {
+	cmSetPolicyBaselinePending(bool)
+	cmPolicyBaselinePending() bool
+	cmPersistPolicyBaselineModel(string) (bool, error)
+}
+
+type policyReplacementResolver interface {
+	cmResolvePolicyReplacement(*config.HiddenModelPolicy, []SessionConfigOptionValue) string
+}
+
 func (c configManager) configOptions(d configDeps) []SessionConfigOption {
 	return d.cmGetConfigOptions()
 }
@@ -987,6 +997,110 @@ func (c configManager) persistConfigValue(d configDeps, configID, value string) 
 
 func (c configManager) persistBaselineModel(d configDeps, value string) {
 	d.cmPersistBaselineModel(value)
+}
+
+// reconcileHiddenModelPolicyForDispatch makes a policy-forced baseline change
+// truthful before a normal turn can proceed.  It is intentionally separate
+// from unavailable-model fallback: hiding a model must not rewrite historical
+// attribution or emit a misleading unavailable notice.
+func (c configManager) reconcileHiddenModelPolicyForDispatch(d configDeps, ctx context.Context) error {
+	persistence, hasPersistence := d.(policyBaselinePersistence)
+	policy, err := d.cmHiddenModelPolicy()
+	if err != nil {
+		return fmt.Errorf("hidden-model policy unavailable: %w", errors.Join(errModelHiddenByPolicy, err))
+	}
+	if policy == nil && (!hasPersistence || !persistence.cmPolicyBaselinePending()) {
+		return nil
+	}
+	if d.cmModelCatalogSynthesized() || !d.cmHasAgentModels() {
+		return fmt.Errorf("model catalog is unavailable for hidden-model reconciliation: %w", errModelHiddenByPolicy)
+	}
+	opt, ok := d.cmFindByCategory(ConfigOptionCategoryModel)
+	if !ok || len(opt.Options) == 0 {
+		return fmt.Errorf("no eligible model catalog is available for hidden-model reconciliation: %w", errModelHiddenByPolicy)
+	}
+	options := c.eligibleModelOptions(d, opt.Options)
+	if len(options) == 0 {
+		return fmt.Errorf("all advertised models are hidden by policy: %w", errModelHiddenByPolicy)
+	}
+	contains := func(id string) bool {
+		for _, option := range options {
+			if option.Value == id {
+				return true
+			}
+		}
+		return false
+	}
+	active := d.cmGetCurrentModelID()
+	baseline := d.cmGetBaselineModel()
+	needReplacement := !contains(active) || !contains(baseline) || (hasPersistence && persistence.cmPolicyBaselinePending())
+	if !needReplacement {
+		return nil
+	}
+	target := active
+	if !contains(target) {
+		if resolver, ok := d.(policyReplacementResolver); ok {
+			target = resolver.cmResolvePolicyReplacement(policy, options)
+		}
+		if target == "" {
+			if constraint := d.cmGetACPServerConstraint(ConfigOptionCategoryModel); constraint != nil && constraint.Pattern != "" {
+				target = MatchConstraintOption(constraint, options)
+			}
+		}
+		if target == "" {
+			target = options[0].Value
+		}
+	}
+	if target == "" {
+		return fmt.Errorf("no eligible replacement model is available: %w", errModelHiddenByPolicy)
+	}
+	// Serialize the ACK and dependent-option reconciliation with any pending
+	// config operation.  An already truthful active target needs no redundant RPC.
+	d.cmLockConfigRPC()
+	defer d.cmUnlockConfigRPC()
+	if d.cmGetCurrentModelID() != target {
+		if err := c.setModelAndReconcile(d, ctx, target, true, nil); err != nil {
+			return fmt.Errorf("failed to confirm policy replacement model %q: %w", target, err)
+		}
+		d.cmSetCurrentModelID(target)
+	}
+	// A new publication during the ACK is not a success.  Leave the truthful
+	// active state intact, but do not persist/announce it as a completed fallback.
+	if err := c.refuseHiddenModel(d, target); err != nil {
+		return fmt.Errorf("policy changed while confirming replacement %q: %w", target, err)
+	}
+	d.cmSetBaselineAndClearOverride(target)
+	if hasPersistence {
+		written, err := persistence.cmPersistPolicyBaselineModel(target)
+		if err != nil || !written {
+			persistence.cmSetPolicyBaselinePending(true)
+			if err != nil {
+				return fmt.Errorf("failed to persist policy replacement model %q: %w", target, err)
+			}
+			return fmt.Errorf("policy replacement model %q was superseded before persistence", target)
+		}
+		persistence.cmSetPolicyBaselinePending(false)
+	} else {
+		c.persistBaselineModel(d, target)
+	}
+	if err := c.refuseHiddenModel(d, target); err != nil {
+		if hasPersistence {
+			persistence.cmSetPolicyBaselinePending(true)
+		}
+		return fmt.Errorf("policy changed before replacement completed for %q: %w", target, err)
+	}
+	if err := d.cmRecordSessionChange("model_policy_reconciled", target, baseline); err != nil {
+		if hasPersistence {
+			persistence.cmSetPolicyBaselinePending(true)
+		}
+		return fmt.Errorf("failed to record policy replacement explanation for %q: %w", target, err)
+	}
+	d.cmUpdateConfigOptionValue(ConfigOptionCategoryModel, target)
+	d.cmNotifyConfigChanged(ConfigOptionCategoryModel, target)
+	if l := d.cmLogger(); l != nil {
+		l.Warn("Hidden model policy replaced the conversation model", "session_id", d.cmSessionID(), "replacement_model", target)
+	}
+	return nil
 }
 
 // refuseSynthesizedModelID is the central guard (mitto-a7wm) preventing any

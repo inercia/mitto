@@ -493,6 +493,63 @@ func (bs *BackgroundSession) cmSetBaselineAndClearOverride(baseline string) {
 	bs.modelMu.Unlock()
 }
 
+func (bs *BackgroundSession) cmSetPolicyBaselinePending(pending bool) {
+	bs.modelMu.Lock()
+	bs.policyBaselinePending = pending
+	bs.modelMu.Unlock()
+}
+
+func (bs *BackgroundSession) cmPolicyBaselinePending() bool {
+	bs.modelMu.Lock()
+	defer bs.modelMu.Unlock()
+	return bs.policyBaselinePending
+}
+
+// cmResolvePolicyReplacement reuses normal startup preference ordering only
+// when the saved/active baseline is no longer eligible.  It never overrides an
+// already eligible manual baseline.
+func (bs *BackgroundSession) cmResolvePolicyReplacement(policy *config.HiddenModelPolicy, options []SessionConfigOptionValue) string {
+	models := bs.AgentModels()
+	if models == nil || models.Synthesized {
+		return ""
+	}
+	eligible := &SessionModelState{AvailableModels: make([]ModelInfo, 0, len(options))}
+	for _, option := range options {
+		eligible.AvailableModels = append(eligible.AvailableModels, ModelInfo{ModelId: option.Value, Name: option.Name})
+	}
+	if selected := selectPreferredModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), eligible, true, bs.modelOverrideForTag, policy); selected != "" {
+		return selected
+	}
+	return ""
+}
+
+// cmPersistPolicyBaselineModel is the error-returning persistence path used
+// only after a policy-forced replacement.  Ordinary baseline writes retain
+// their historical best-effort behavior.  The boolean is false when a newer
+// baseline won while the metadata store was serializing this write.
+func (bs *BackgroundSession) cmPersistPolicyBaselineModel(value string) (bool, error) {
+	if bs.store == nil {
+		return true, nil
+	}
+	bs.modelMu.Lock()
+	version := bs.baselineVersion.Load()
+	current := bs.baselineModel == value
+	bs.modelMu.Unlock()
+	if !current {
+		return false, nil
+	}
+	written := false
+	err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+		if bs.baselineVersion.Load() != version {
+			return
+		}
+		m.BaselineModel = value
+		m.PendingInitialModelPreference = nil
+		written = true
+	})
+	return written, err
+}
+
 // GetBaselineModel returns the user's intended model for this session
 // (untouched by per-prompt overrides). Empty when no baseline has been set.
 // Safe to call concurrently; snapshots the field under modelMu.

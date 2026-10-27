@@ -68,6 +68,11 @@ type BackgroundSession struct {
 	// hiddenModelPolicies is shared with the runtime configuration publisher.
 	// Nil is retained for standalone/legacy construction with immutable config.
 	hiddenModelPolicies *config.HiddenModelPolicies
+	// policyBaselinePending records an agent-confirmed policy replacement whose
+	// durable baseline write failed or was superseded.  It is guarded by modelMu;
+	// later work must retry it rather than treating the in-memory active model as
+	// a successful reconciliation.
+	policyBaselinePending bool
 	// rawCatalog retains the last unfiltered ACP model observation so a policy
 	// change can be re-applied without another RPC (RefilterModelPolicy).
 	rawCatalogMu   sync.Mutex

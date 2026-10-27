@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestHiddenModelPoliciesPublication(t *testing.T) {
 	var policies HiddenModelPolicies
@@ -34,5 +37,45 @@ func TestHiddenModelPoliciesPublication(t *testing.T) {
 	}
 	if !older.Policy("one").Hides("a", "Alpha") {
 		t.Fatal("new publication mutated old snapshot")
+	}
+}
+
+func TestHiddenModelPoliciesAdmitExcludesConcurrentPublication(t *testing.T) {
+	var policies HiddenModelPolicies
+	first, err := policies.Prepare([]ACPServer{{Name: "one"}})
+	if err != nil || !policies.Publish(first) {
+		t.Fatalf("publish first: %v", err)
+	}
+	next, err := policies.Prepare([]ACPServer{{Name: "one", HiddenModels: []string{"^hidden$"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- policies.Admit(func(snapshot *HiddenModelSnapshot) error {
+			close(entered)
+			<-release
+			if snapshot != first {
+				return errors.New("admission observed a different snapshot")
+			}
+			return nil
+		})
+	}()
+	<-entered
+	published := make(chan bool, 1)
+	go func() { published <- policies.Publish(next) }()
+	select {
+	case <-published:
+		t.Fatal("publication passed a live admission")
+	default:
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if ok := <-published; !ok {
+		t.Fatal("publication rejected after admission")
 	}
 }

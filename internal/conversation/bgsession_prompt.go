@@ -1002,6 +1002,10 @@ retryAfterRestart:
 		if !meta.modelPreferenceResolved {
 			bs.promptDisp.applyModelPreference(d, meta)
 		}
+		if err := bs.configMgr.reconcileHiddenModelPolicyForDispatch(bs, turn.ctx); err != nil {
+			recordPreparationFailure(err)
+			return
+		}
 		if err := activeModelPreflight(d); err != nil {
 			recordPreparationFailure(err)
 			return
@@ -1109,6 +1113,15 @@ retryAfterRestart:
 
 		promptStartedAt = time.Now() // captured for after-phase processors
 		turn.cleanupMu.Unlock()
+		// This final admission is deliberately after every wait and model ACK,
+		// immediately adjacent to the transport handoff.  A policy publication
+		// that completed after preparation must therefore be observed here.
+		if err := bs.finalPolicyAdmission(d); err != nil {
+			promptCancel()
+			completionErr = err
+			recordPreparationFailure(err)
+			return
+		}
 		// This is the dispatch-accepted boundary (mitto-46k). Commit trigger state
 		// exactly once after releasing the lifecycle lock and immediately before the
 		// first ACP Prompt call. Automatic retries reuse the original acceptance.
@@ -1164,6 +1177,11 @@ retryAfterRestart:
 					return false
 				}
 				bs.promptDisp.applyModelPreference(d, meta)
+				if reconcileErr := bs.configMgr.reconcileHiddenModelPolicyForDispatch(bs, turn.ctx); reconcileErr != nil {
+					completionErr = reconcileErr
+					bs.notifyObservers(func(o SessionObserver) { o.OnError(reconcileErr.Error()) })
+					return false
+				}
 				if gateErr := activeModelPreflight(d); gateErr != nil {
 					completionErr = gateErr
 					bs.notifyObservers(func(o SessionObserver) { o.OnError(gateErr.Error()) })
@@ -2040,6 +2058,10 @@ func activeModelPreflight(d promptDeps) error {
 		return fmt.Errorf("hidden-model policy unavailable for active model %q: %w",
 			cur, errors.Join(errModelHiddenByPolicy, err))
 	}
+	return activeModelPreflightWithPolicy(models, policy)
+}
+
+func activeModelPreflightWithPolicy(models *SessionModelState, policy *config.HiddenModelPolicy) error {
 	if policy == nil {
 		return nil
 	}
@@ -2054,4 +2076,34 @@ func activeModelPreflight(d promptDeps) error {
 		return fmt.Errorf("active model %q: %w", cur, errModelHiddenByPolicy)
 	}
 	return nil
+}
+
+// finalPolicyAdmission is the short publication/dispatch handoff.  It performs
+// no RPC, persistence, callback, or observer work while the policy runtime is
+// pinned.  Legacy sessions without the runtime owner retain activeModelPreflight
+// compatibility.
+func (bs *BackgroundSession) finalPolicyAdmission(d promptDeps) error {
+	if bs.hiddenModelPolicies == nil {
+		return activeModelPreflight(d)
+	}
+	return bs.hiddenModelPolicies.Admit(func(snapshot *config.HiddenModelSnapshot) error {
+		if snapshot == nil {
+			return activeModelPreflight(d)
+		}
+		policy := snapshot.Policy(bs.acpServer)
+		if err := activeModelPreflightWithPolicy(d.pdGetAgentModels(), policy); err != nil {
+			return err
+		}
+		if policy == nil {
+			return nil
+		}
+		if bs.cmPolicyBaselinePending() {
+			return fmt.Errorf("policy replacement baseline is not durably persisted: %w", errModelHiddenByPolicy)
+		}
+		baseline := bs.GetBaselineModel()
+		if baseline != "" && !modelEligible(policy, baseline, ModelDisplayName(d.pdGetAgentModels(), baseline)) {
+			return fmt.Errorf("saved baseline model %q requires policy reconciliation: %w", baseline, errModelHiddenByPolicy)
+		}
+		return nil
+	})
 }

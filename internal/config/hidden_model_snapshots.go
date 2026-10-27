@@ -78,3 +78,14 @@ func (p *HiddenModelPolicies) Read() (*HiddenModelSnapshot, func()) {
 	p.mu.RLock()
 	return p.current, p.mu.RUnlock
 }
+
+// Admit runs check against the current immutable publication while excluding a
+// concurrent Publish.  It is deliberately limited to an in-memory final
+// handoff: check must not invoke callbacks, storage, or an RPC.  Callers use it
+// immediately before handing work to their transport, so work prepared before a
+// settings save is never admitted under an older snapshot.
+func (p *HiddenModelPolicies) Admit(check func(*HiddenModelSnapshot) error) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return check(p.current)
+}
