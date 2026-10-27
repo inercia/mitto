@@ -3,12 +3,12 @@ name: Rebase changes
 menus: prompts, !promptsLoop
 description: Rebase changes on top of main
 group: Submission of changes
-backgroundColor: '#B2DFDB'
+backgroundColor: "#B2DFDB"
 enabledWhen: '!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
   - modelTag: Coding
 target:
-  title: 'Submission of changes'
+  title: "Submission of changes"
   reuse:
     title: true
     coalesce: true
@@ -19,11 +19,20 @@ prompt: |
 
   ```bash
   git branch --show-current
-  git status --porcelain
-  git status
+  git status --porcelain --untracked-files=no
+  git status --short
   ```
 
-  If uncommitted changes exist, ask user whether to stash, commit, or discard. Do not proceed until clean.
+  Only tracked changes block the rebase. Untracked files do not: leave them
+  untouched and proceed. Do not stash, commit, or discard untracked work just
+  to start the rebase.
+
+  If tracked uncommitted changes exist, ask user whether to stash, commit, or
+  discard. Do not proceed until the tracked working tree is clean.
+
+  If Git refuses to rebase because an untracked file would be overwritten, stop
+  and ask the user how to preserve or move that file. Never delete untracked
+  work to clear the way.
 
   ### 2. Identify Target Remote and Branch
 

@@ -3,10 +3,12 @@
   by git/rebase-changes (the dedicated workflow) and git/commit-and-submit
   (which rebases inline before pushing).
 
-  Preconditions: the working tree is clean (all work committed), and the caller
-  has resolved `<target-remote>` and `<target-branch>` (usually via
-  git/shared/identify-remote-branch). Callers that only need to know WHETHER a
-  rebase is required should first render git/shared/behind-base-count.
+  Preconditions: tracked work is committed (the tracked working tree is clean),
+  and the caller has resolved `<target-remote>` and `<target-branch>` (usually
+  via git/shared/identify-remote-branch). Untracked files may remain; they must
+  be left untouched and only stop the rebase if Git would overwrite one. Callers
+  that only need to know WHETHER a rebase is required should first render
+  git/shared/behind-base-count.
 
   Emits `####` sub-headings so it slots under the caller's own numbered step.
 */}}
