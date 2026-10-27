@@ -31,6 +31,30 @@ func TestLoopUntilCompleteClosePolicySchema(t *testing.T) {
 	t.Error("ClosePolicy parameter missing")
 }
 
+func TestLoopUntilCompleteSubmitStrategySchema(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", "beads-issues/loop-until-complete.prompt.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := ParsePromptFile("beads-issues/loop-until-complete.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, parameter := range prompt.Parameters {
+		if parameter.Name == "SubmitStrategy" {
+			if parameter.Type != "text" || parameter.Default != "Commit" || strings.Join(parameter.Options, ",") != "Commit,Pull Request,None" {
+				t.Errorf("SubmitStrategy = %#v, want optional Commit/Pull Request/None selector defaulting to Commit", parameter)
+			}
+			if parameter.Required != nil && *parameter.Required {
+				t.Errorf("SubmitStrategy required = true, want optional")
+			}
+			return
+		}
+	}
+	t.Error("SubmitStrategy parameter missing")
+}
+
 func TestLoopUntilCompleteClosePolicyRendering(t *testing.T) {
 	render := func(policy, submitStrategy, linkedIssue, issueArg string, continuation bool) string {
 		t.Helper()
@@ -77,6 +101,13 @@ func TestLoopUntilCompleteClosePolicyRendering(t *testing.T) {
 						"fresh sibling owned by this orchestrator, never a grandchild",
 						"runnable verification work, not a deferral",
 						"do not retry the same unchanged attempt",
+						"read the latest `Acceptance verification:` report and use its failed criteria and evidence as the repair spec",
+						"Do not switch to `Ask` merely because verification failed",
+						"On FAIL, record a concise durable `Iterate run: verification failed because <failed criteria and reasons>` comment",
+						"The next run reads that report and dispatches one bounded repair scoped to the failed criteria",
+						"only a later run verifies the repaired deliverable again",
+						"the repair increment is exactly its failed criteria",
+						"The Investigation Report remains context, not a substitute for the failed criteria",
 						"supersedes its older pending entry",
 						"not the independent acceptance checks this verifier is about to perform",
 						"still-running verifier awaiting reconciliation",

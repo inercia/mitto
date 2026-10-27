@@ -29,9 +29,10 @@ var submitStrategyFiles = []string{
 // acceptance criteria across all 9 in-scope files:
 //   - the old boolean/text "Commit" parameter is gone (hard rename, no back-compat)
 //   - every file declares "SubmitStrategy" as type "text"
-//   - only the L1 orchestrator (loop-processing) declares it as a picker
-//     (options + default) — dispatch targets must NOT, or mitto-cwz.1 would
-//     always-collect a dialog on an internal-menu prompt
+//   - user-facing loop prompts (the L1 orchestrator and Loop until issue
+//     complete) declare it as a picker (options + default); internal dispatch
+//     targets must NOT, or mitto-cwz.1 would always-collect a dialog on an
+//     internal-menu prompt
 func TestSubmitStrategy_ParameterDeclarations(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
@@ -66,7 +67,8 @@ func TestSubmitStrategy_ParameterDeclarations(t *testing.T) {
 				t.Errorf("%s: SubmitStrategy.Type = %q, want \"text\"", rel, submit.Type)
 			}
 
-			isPicker := rel == "beads-issues/loop-processing.prompt.yaml"
+			isPicker := rel == "beads-issues/loop-processing.prompt.yaml" ||
+				rel == "beads-issues/loop-until-complete.prompt.yaml"
 			if isPicker {
 				want := []string{"Commit", "Pull Request", "None"}
 				if strings.Join(submit.Options, ",") != strings.Join(want, ",") {

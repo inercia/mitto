@@ -9,6 +9,8 @@ parameters:
   - name: SubmitStrategy
     type: text
     required: false
+    options: ["Commit", "Pull Request", "None"]
+    default: "Commit"
     description: How finished work is submitted. "Commit" (default) — the delegated worker commits its changes at the end of each increment. "Pull Request" — treated the same as "Commit" here (no branch/PR automation at this orchestration level). "None" — the worker leaves changes uncommitted.
   - name: ClosePolicy
     type: text
@@ -17,7 +19,7 @@ parameters:
     options: [Ask, Leave open, Verify and close]
     description: Ask (default) before closing completed work, leave it open, or close only after fresh independent acceptance verification.
 description: Auto-loop — keep advancing this bead toward completion, then self-terminate when nothing ready remains
-backgroundColor: '#C8E6C9'
+backgroundColor: "#C8E6C9"
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
@@ -214,9 +216,11 @@ prompt: |
       active verifier first. A verifier still running after a timeout remains this loop's runnable
       work: wait for/reconcile its report on the next run; do not spawn another verifier or an
       implementation child while it is active. Existing FAIL/UNKNOWN without new work or evidence
-      is not a retry trigger: **do not retry the same unchanged attempt**. Concrete FAIL selects a later bounded repair, and UNKNOWN selects one
-       bounded locally-collectable evidence task. Only a real external requirement, missing
-       authoritative requirement, or required human sign-off is a blocker.
+      is not a retry trigger: **do not retry the same unchanged attempt**. A concrete FAIL selects a
+      later bounded repair: read the latest `Acceptance verification:` report and use its failed
+      criteria and evidence as the repair spec. UNKNOWN selects one bounded locally-collectable
+      evidence task. Only a real external requirement, missing authoritative requirement, or required
+      human sign-off is a blocker. Do not switch to `Ask` merely because verification failed.
        Use the latest relevant outcome for this ticket: a FAIL/UNKNOWN or completed attempt
        supersedes its older pending entry. Never treat an obsolete pending comment
        as authorization to rerun unchanged verification. Record the next phase and the verifier's
@@ -239,9 +243,13 @@ prompt: |
       {{- $verificationContext := dict "Session" .Session "Args" (dict "Commit" $verificationCommit "RequireTerminalLabel" "false" "EffectiveID" $effectiveID) }}
       {{ template "beads-issues/shared/acceptance-close" $verificationContext }}
 
-      After this one attempt, log its outcome and end this run. The coordinator's verifier is a fresh
-      sibling owned by this orchestrator, never a grandchild. It is the only newly spawned child this
-      run; it must not repair inline, and a PASS closes only `<target>`.
+      After this one attempt, log its outcome and end this run. On FAIL, record a concise durable
+      `Iterate run: verification failed because <failed criteria and reasons>` comment; the
+      verifier's `Acceptance verification:` report remains the detailed evidence. Do not repair
+      inline and do not switch to `Ask`. The next run reads that report and dispatches one bounded
+      repair scoped to the failed criteria; only a later run verifies the repaired deliverable again.
+      The coordinator's verifier is a fresh sibling owned by this orchestrator, never a grandchild.
+      It is the only newly spawned child this run, and a PASS closes only `<target>`.
       {{ else }}
       For `Ask` and `Leave open`, give locally runnable missing checks/evidence to the bounded
       worker; do not dispatch an independent verifier. If the ticket is already genuinely complete
@@ -300,6 +308,11 @@ prompt: |
        `bd comment` report) in the worker prompt and include this rule verbatim:
 
        {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "consumer") }}
+
+       If the latest `Acceptance verification:` report is a FAIL, the repair increment is exactly
+       its failed criteria: include those criteria, the verifier's evidence, and the requirement to
+       re-run the relevant checks in the child prompt. The Investigation Report remains context,
+       not a substitute for the failed criteria.
 
        Otherwise, before dispatching, make sure the
        work is unambiguous and self-contained. If `<target>` is itself a small,

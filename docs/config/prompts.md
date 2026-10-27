@@ -2263,9 +2263,10 @@ uncommitted work unless acceptance itself requires a commit/merge/deployment.
 
 The verifier wait is bounded to 600 seconds. Timeout, missing criteria/evidence, failed checks,
 stale state, required human action, or tool/permission errors leaves the ticket open with
-findings, without an automatic repair/retry loop or fallback to `Ask`. A running verifier
-and its coordinator are not deleted on timeout. Retry explicitly after resolving the findings.
-No-target inline work never launches a verifier.
+findings, without an automatic repair/retry inside the verification attempt or fallback to
+`Ask`. A running verifier and its coordinator are not deleted on timeout. In a loop, the next
+run may dispatch one bounded repair based on the durable failed criteria; Start work requires an
+explicit retry after resolving the findings. No-target inline work never launches a verifier.
 
 Start work forwards this policy through self-continuations and parallel child calls. A child
 cannot spawn grandchildren, so it queues the complete verification-and-close procedure to its
