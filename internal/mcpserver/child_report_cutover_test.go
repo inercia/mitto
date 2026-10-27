@@ -200,6 +200,68 @@ func TestChildReportCutoverFailureBeforePublication(t *testing.T) {
 	}
 }
 
+func TestChildReportCutover_HandlerWriteFailureRecoversWithoutPublishing(t *testing.T) {
+	srv, _, parent, children := setupParentChildSessions(t, 1)
+	child := children[0]
+	started, releaseWait := make(chan struct{}), make(chan struct{})
+	srv.sessionManager = &reportWaitBarrierManager{
+		mockSessionManagerForAutoResume: &mockSessionManagerForAutoResume{},
+		onWaiting: func(waiting bool) {
+			if waiting {
+				close(started)
+				<-releaseWait
+			}
+		},
+	}
+	waitDone := startTaskScopeWait(t, srv, context.Background(), ChildrenTasksWaitInput{
+		SelfID: parent, ChildrenList: children, TaskID: "A", Prompt: "wait for A", TimeoutSeconds: 5,
+	})
+	<-started
+	collector, err := srv.getOrCreateCollector(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := collector.historyLocked()
+	entered, releaseWrite := make(chan struct{}), make(chan struct{})
+	collector.writeHistory = func(childReportHistoryState) error {
+		close(entered)
+		<-releaseWrite
+		return errors.New("durable write unavailable")
+	}
+	rejected := make(chan ChildrenTasksReportOutput, 1)
+	go func() {
+		_, output, _ := srv.handleChildrenTasksReport(context.Background(), nil, ChildrenTasksReportInput{
+			SelfID: child, TaskID: "A", Status: "completed", Summary: "rejected evidence",
+		})
+		rejected <- output
+	}()
+	<-entered
+	select {
+	case output := <-rejected:
+		t.Fatalf("report returned before durable write finished: %+v", output)
+	default:
+	}
+	if !equalStoredHistory(prior, collector.historyLocked()) || collector.reports[child] != nil {
+		t.Fatal("failed durable evidence was published")
+	}
+	close(releaseWrite)
+	if output := <-rejected; output.Success || !strings.Contains(output.Error, "retry later") {
+		t.Fatalf("write failure was not surfaced for retry: %+v", output)
+	}
+	collector.writeHistory = nil
+	if _, output, err := srv.handleChildrenTasksReport(context.Background(), nil, ChildrenTasksReportInput{
+		SelfID: child, TaskID: "A", Status: "completed", Summary: "recovered evidence",
+	}); err != nil || !output.Success {
+		t.Fatalf("recovered report: %+v %v", output, err)
+	}
+	close(releaseWait)
+	result := <-waitDone
+	info := result.output.Reports[child]
+	if result.err != nil || !result.output.Success || result.output.TimedOut || !info.Completed || info.Report == nil || info.Report.Summary != "recovered evidence" {
+		t.Fatalf("recovery did not durably resolve active wait: %+v %v", result.output, result.err)
+	}
+}
+
 func TestChildReportCutoverDeletedParent(t *testing.T) {
 	srv, store, parent, children := setupParentChildSessions(t, 1)
 	c, err := srv.getOrCreateCollector(parent)
@@ -277,6 +339,15 @@ func TestChildReportCutoverConcurrentLifetime(t *testing.T) {
 	if len(again.entries) != 2 || again.entries[0].ChildID != children[0] {
 		t.Fatal("concurrent accepted history lost/reordered")
 	}
+	// The ingress that survived cleanup retains its original explicit task
+	// association. A later owner must not reinterpret it as next-task evidence.
+	next, done := retained.startTestWait("next", children)
+	if done || retained.projectionLocked(children[0]).taskSucceeded() || retained.projectionLocked(children[1]).taskSucceeded() ||
+		retained.entries[0].EffectiveTaskID != "task" || retained.entries[1].EffectiveTaskID != "task" {
+		t.Fatalf("cleanup-boundary evidence contaminated next task: %+v", retained.entries)
+	}
+	assertWaitChannel(t, next, false)
+	retained.clearWait(retained.waitOwner)
 }
 
 func TestChildReportCutoverDiagnostics(t *testing.T) {
@@ -448,6 +519,26 @@ func TestChildReportCutoverLegacyDiagnostics(t *testing.T) {
 	}
 	if !equalStoredHistory(before, again.historyLocked()) {
 		t.Fatal("legacy diagnostic reload changed history")
+	}
+}
+
+func TestChildReportCutoverLegacyEvidenceCannotCompleteNextTask(t *testing.T) {
+	srv, store, parent, children := setupParentChildSessions(t, 1)
+	child := children[0]
+	legacy := json.RawMessage(fmt.Sprintf(`{"reports":{%q:{"completed":true,"timestamp":"2026-10-27T12:00:00Z","report":{"status":"completed","summary":"legacy unscoped"}}}}`, child))
+	if err := store.WriteSessionSidecarJSON(parent, childReportsStateFile, legacy); err != nil {
+		t.Fatal(err)
+	}
+	_, output, err := srv.handleChildrenTasksWait(context.Background(), nil, ChildrenTasksWaitInput{
+		SelfID: parent, ChildrenList: children, TaskID: "B", TimeoutSeconds: 1,
+	})
+	info := output.Reports[child]
+	if err != nil || !output.Success || !output.TimedOut || info.Completed || info.TaskMatches || info.Association != string(childReportUnassociated) || info.EffectiveTaskID != "" || info.Report == nil || info.Report.Summary != "legacy unscoped" {
+		t.Fatalf("legacy evidence contaminated B: %+v %v", output, err)
+	}
+	var snapshot json.RawMessage
+	if err := store.ReadSessionSidecarJSON(parent, childReportsLegacySnapshotFile, &snapshot); err != nil || !strings.Contains(string(snapshot), "legacy unscoped") {
+		t.Fatalf("migration did not preserve legacy evidence snapshot: %s %v", snapshot, err)
 	}
 }
 
