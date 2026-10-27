@@ -45,11 +45,11 @@ const childrenReportSuffix = "\n\n" +
 	"Keep your report concise: focus on key conclusions and actions rather than exhaustive details. " + "\n" +
 	"Use the `mitto_children_tasks_report` MCP tool with: " + "\n" +
 	"1) your `self_id`, " + "\n" +
-	"2) a `status` (e.g. \"completed\", \"in_progress\", \"failed\"), " + "\n" +
+	"2) a raw `status`: exact \"completed\" succeeds; \"failed\", \"partial\", and \"verification_pending\" are terminal but unsuccessful; \"in_progress\" and other values remain nonterminal evidence, " + "\n" +
 	"3) a `summary` of your findings/changes/conclusions (max ~8KB), " + "\n" +
 	"4) OPTIONALLY some `details` with additional information (max ~16KB). " + "\n" +
 	"%s " + "\n" +
-	"NOTE: ignore these instructions if you have already sent the report."
+	"A report is evidence, not acceptance PASS. NOTE: ignore these instructions if you have already sent the report."
 
 // logChildrenWaitTimeout logs the outcome of a children-wait timeout. When there
 // are genuinely outstanding (pending) children at the deadline, it logs at WARN

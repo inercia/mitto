@@ -71,7 +71,7 @@ prompt: |
      When complete, report via mitto_children_tasks_report:
        self_id: <your own session ID — call mitto_conversation_get_current(self_id: "init") to get it>
        task_id: "<task_id from the parent's wait call>"
-       status: "completed" | "failed" | "partial"
+        status: "completed" | "failed" | "partial" | "verification_pending" | "in_progress"
        summary: "<what was accomplished>"
        details: "<files modified, errors, discoveries, open questions>"
      Do this as your final action.
@@ -96,11 +96,13 @@ prompt: |
 
   ### 1. Categorize results
 
-  - **Succeeded**: `completed: true`, status `"completed"`
-  - **Partial**: `completed: true`, status `"partial"`
-  - **Failed**: `completed: true`, status `"failed"`
-  - **Timed out**: `status: "pending"`
-  - **Not running**: `status: "not_running"`
+   `success` means the wait tool ran; it is not child-task success. For every child, inspect the raw `outcome.status`, `outcome.successful`, `task_terminal`, `wait_resolved`, and any `diagnostic` separately. Evidence and diagnostics never imply acceptance PASS.
+
+   - **Succeeded**: exact raw `outcome.status: "completed"` with `outcome.successful: true`, `task_terminal: true`, and `completed: true`
+   - **Terminal unsuccessful**: raw `"failed"`, `"partial"`, or `"verification_pending"` with `task_terminal: true`; `completed` must remain false
+   - **Still active / unknown**: raw `"in_progress"` or unknown raw status; retained evidence, nonterminal unless a separate diagnostic resolves the wait
+   - **Wait-resolved diagnostic**: `wait_resolved: true` with a `diagnostic` (for example, not running) resolves coordination only, never task success
+   - **Timed out**: top-level `timed_out: true`; inspect each child rather than assuming its task outcome
 
   ### 2. Cross-report synthesis
 

@@ -3,8 +3,31 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestCreateMinionsPromptDistinguishesTaskOutcomeFromWaitResolution(t *testing.T) {
+	targetDir := t.TempDir()
+	if _, err := EnsureBuiltinPrompts(targetDir); err != nil {
+		t.Fatalf("EnsureBuiltinPrompts failed: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(targetDir, "child", "create-minions.prompt.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"`success` means the wait tool ran; it is not child-task success.",
+		"`outcome.status`, `outcome.successful`, `task_terminal`, `wait_resolved`, and any `diagnostic` separately",
+		"raw `\"failed\"`, `\"partial\"`, or `\"verification_pending\"` with `task_terminal: true`; `completed` must remain false",
+		"never task success",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("create-minions prompt lacks child-outcome contract %q", want)
+		}
+	}
+}
 
 // TestEnsureBuiltinPrompts_PrunesStaleFiles verifies that EnsureBuiltinPrompts
 // removes stale builtin files that are not part of the embedded set: both

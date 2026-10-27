@@ -69,6 +69,14 @@ func TestChildrenTasksContract_RegisteredSchema(t *testing.T) {
 			t.Fatalf("%s is not a typed boolean", key)
 		}
 	}
+	for toolName, want := range map[string]string{
+		"mitto_children_tasks_wait":   "Success is tool-operation success; inspect completed, task_terminal, wait_resolved, outcome, and diagnostic separately.",
+		"mitto_children_tasks_report": "Exact completed means successful delegated-task completion",
+	} {
+		if !strings.Contains(tools[toolName].Description, want) {
+			t.Fatalf("%s description lacks outcome contract %q", toolName, want)
+		}
+	}
 }
 
 func TestChildrenTasksContract_CompactBoundOutput(t *testing.T) {

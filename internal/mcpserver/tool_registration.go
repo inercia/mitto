@@ -358,33 +358,30 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	// mitto_children_tasks_wait - Wait for children to report progress
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_children_tasks_wait",
-		Description: "Send a progress inquiry to multiple child conversations and BLOCK until all of them report back. " +
+		Description: "Send a progress inquiry to multiple child conversations and BLOCK until every child is wait-resolved or the timeout expires. " +
 			"For each child, the provided prompt (plus reporting instructions) is enqueued. " +
 			"If prompt is empty or omitted, no message is sent — the tool just waits for children to report " +
 			"(useful for retrying after a timeout without re-enqueuing duplicate messages). " +
 			"Duplicate messages are also prevented: if a child already has a pending message from this parent " +
 			"in its queue, the prompt is skipped for that child. " +
-			"This tool blocks until all children have reported or the timeout expires. " +
 			"Returns a consolidated report from all children. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
-			"Use task_id to scope reports: when retrying the same task after a timeout, pass the same task_id " +
-			"so that reports already received are preserved. When starting a different task, use a new task_id " +
-			"to clear stale reports from the previous task. " +
-			"A report that carries no task_id is still accepted for the active wait, and a genuine report filed " +
-			"for a different task is returned as completed with a warning instead of being reported as " +
-			"agent_not_responding. " +
+			"Use task_id to scope task association: retry the same task_id to retain terminal evidence and diagnostics; use a new task_id for new work. " +
+			"A no-task report during an active wait is inferred to that task for compatibility, so explicit unique task IDs are recommended. " +
+			"Only exact completed is successful. completed, failed, partial, and verification_pending are terminal; in_progress and unknown statuses remain accepted evidence but do not terminate a healthy wait. " +
+			"Success is tool-operation success; inspect completed, task_terminal, wait_resolved, outcome, and diagnostic separately. " +
 			selfIDNote,
 	}, s.handleChildrenTasksWait)
 
 	// mitto_children_tasks_report - Report task progress back to parent
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_children_tasks_report",
-		Description: "Report task completion or progress back to a waiting parent conversation. " +
+		Description: "Append genuine task evidence to the parent-owned report history and notify an active parent wait when applicable. " +
 			"The parent must have previously called mitto_children_tasks_wait with this conversation's ID in the children_list. " +
-			"Provide a status (e.g. 'completed', 'in_progress', 'failed'), a summary of your findings, " +
+			"Provide a raw status, summary, " +
 			"and optionally details with additional information. " +
 			"Keep reports concise: summary is limited to ~8KB and details to ~16KB. " +
-			"If the parent provided a task_id in the wait call, include the same task_id in your report. " +
+			"If the parent provided a task_id in the wait call, include the same task_id in your report. Exact completed means successful delegated-task completion; failed, partial, and verification_pending are terminal but unsuccessful, while unknown statuses are retained without becoming terminal. " +
 			selfIDNote,
 	}, s.handleChildrenTasksReport)
 
