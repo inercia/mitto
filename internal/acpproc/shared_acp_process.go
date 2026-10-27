@@ -23,6 +23,7 @@ import (
 	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/coldstart"
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
@@ -278,6 +279,10 @@ type SharedACPProcessConfig struct {
 	ACPCwd string
 	// ACPServer is the name of the ACP server (for logging).
 	ACPServer string
+	// HiddenModelPolicies is the live runtime publication used to reject model
+	// switches forbidden by the current per-configured-server policy. Nil keeps
+	// legacy behavior (no hidden-model enforcement at the transport boundary).
+	HiddenModelPolicies *config.HiddenModelPolicies
 	// WorkingDir is the workspace's project directory (e.g., /Users/.../myproject).
 	// Used as the cwd for auxiliary sessions so the agent discovers MCP servers.
 	WorkingDir string
@@ -2620,6 +2625,15 @@ func (p *SharedACPProcess) ProcessDone() <-chan struct{} {
 // the conversation.SharedProcess interface (mitto-mx9.1.1); translated to/from
 // ACP at this boundary using internal/acpbackend's shared translators.
 func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID string, content []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
+	return p.PromptWithAdmission(ctx, sessionID, content, nil)
+}
+
+// PromptWithAdmission is Prompt with a final admission callback that runs
+// immediately before the prompt RPC. Callers use it to revalidate mutable
+// dispatch policy after every wait and lock, without leaving a prepared turn
+// authorized by an older policy publication. The callback must not perform an
+// RPC; it runs synchronously before the transport handoff.
+func (p *SharedACPProcess) PromptWithAdmission(ctx context.Context, sessionID string, content []agentbackend.ContentBlock, admission func() error) (agentbackend.PromptOutcome, error) {
 	p.beginRPC()
 	defer p.endRPC()
 
@@ -2629,6 +2643,11 @@ func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID string, content
 
 	if conn == nil {
 		return agentbackend.PromptOutcome{}, fmt.Errorf("shared ACP process is not running")
+	}
+	if admission != nil {
+		if err := admission(); err != nil {
+			return agentbackend.PromptOutcome{}, err
+		}
 	}
 
 	resp, err := conn.Prompt(ctx, acp.PromptRequest{
@@ -2738,6 +2757,26 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID string,
 	return err
 }
 
+// admitSetModelPolicy rejects a model switch forbidden by the current hidden
+// model policy for this configured server. It runs while the policy publication
+// is pinned, but performs no RPC, callback, storage, or observer work.
+func (p *SharedACPProcess) admitSetModelPolicy(sessionID acp.SessionId, modelID string) error {
+	policies := p.config.HiddenModelPolicies
+	if policies == nil {
+		return nil
+	}
+	return policies.Admit(func(snapshot *config.HiddenModelSnapshot) error {
+		if snapshot == nil {
+			return nil
+		}
+		policy := snapshot.Policy(p.config.ACPServer)
+		if policy == nil || !policy.Hides(modelID, "") {
+			return nil
+		}
+		return fmt.Errorf("set_model: model %q is hidden by current policy for server %q (session %s)", modelID, p.config.ACPServer, sessionID)
+	})
+}
+
 // SetSessionModel sets the model for a specific session.
 // It serialises concurrent callers via setModelSem (one in-flight RPC at a time per
 // process) and retries on transient timeouts so burst startups don't race the
@@ -2841,6 +2880,11 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionIDStr str
 		}
 		return fmt.Errorf("set_model: shared ACP process became saturated while waiting for the serialization slot; failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
+	// Revalidate policy after every wait: a publication that landed while this
+	// caller queued must not authorize the switch it prepared under an older one.
+	if err := p.admitSetModelPolicy(sessionID, modelID); err != nil {
+		return err
+	}
 
 	// Track as an active RPC for GC visibility (mirrors other methods).
 	p.beginRPC()
@@ -2898,6 +2942,12 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionIDStr str
 			}
 		}
 
+		// A publication can change between retries. Revalidate before every
+		// attempt so a queued caller never dispatches a now-hidden model.
+		if err := p.admitSetModelPolicy(sessionID, modelID); err != nil {
+			return err
+		}
+
 		// Fresh per-attempt sub-context using the attempt schedule so each attempt
 		// (especially a caller that waited on the semaphore) gets its full budget.
 		attemptCtx, attemptCancel := context.WithTimeout(ctx, setSessionModelAttemptTimeouts[attempt-1])
@@ -2929,6 +2979,12 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionIDStr str
 					"model_id", modelID,
 					"attempt", attempt)
 			}
+			// Revalidate immediately before the legacy call too: it is a separate
+			// RPC and may execute long after the primary attempt began.
+			if policyErr := p.admitSetModelPolicy(sessionID, modelID); policyErr != nil {
+				attemptCancel()
+				return policyErr
+			}
 			_, err = conn.SetSessionConfigOption(attemptCtx, acp.SetSessionConfigOptionRequest{
 				ValueId: &acp.SetSessionConfigOptionValueId{
 					SessionId: sessionID,
@@ -2941,6 +2997,11 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionIDStr str
 		attemptCancel()
 
 		if err == nil {
+			// The ACK may have raced a publication that hides the model. Do not
+			// record success or announce a switch the current policy forbids.
+			if policyErr := p.admitSetModelPolicy(sessionID, modelID); policyErr != nil {
+				return policyErr
+			}
 			p.recordRPCSuccess()
 			if attempt > 1 && p.logger != nil {
 				p.logger.Info("SharedACPProcess.SetSessionModel succeeded after retry",

@@ -819,23 +819,24 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.processCtx, SharedACPProcessConfig{
-		WorkspaceUUID:     workspace.UUID,
-		ACPCommand:        acpCommand,
-		ACPCwd:            acpCwd,
-		ACPServer:         workspace.ACPServer,
-		WorkingDir:        workspace.WorkingDir,
-		Env:               acpEnv,
-		Runner:            r,
-		Logger:            processLogger,
-		CanRestartGlobal:  m.CanRestartGlobally,
-		RecordRestart:     m.RecordGlobalRestart,
-		MCPInitTimeout:    mcpInitTimeout,
-		OnMCPInitProgress: onMCPInitProgress,
-		OnMCPInitTimeout:  onMCPInitTimeout,
-		StderrPatterns:    stderrPatterns,
-		AgentDefaultEnv:   agentDefaultEnv,
-		InitializeTimeout: agentInitializeTimeout,
-		StartupContext:    m.ctx,
+		WorkspaceUUID:       workspace.UUID,
+		ACPCommand:          acpCommand,
+		ACPCwd:              acpCwd,
+		ACPServer:           workspace.ACPServer,
+		HiddenModelPolicies: m.HiddenModelPolicies,
+		WorkingDir:          workspace.WorkingDir,
+		Env:                 acpEnv,
+		Runner:              r,
+		Logger:              processLogger,
+		CanRestartGlobal:    m.CanRestartGlobally,
+		RecordRestart:       m.RecordGlobalRestart,
+		MCPInitTimeout:      mcpInitTimeout,
+		OnMCPInitProgress:   onMCPInitProgress,
+		OnMCPInitTimeout:    onMCPInitTimeout,
+		StderrPatterns:      stderrPatterns,
+		AgentDefaultEnv:     agentDefaultEnv,
+		InitializeTimeout:   agentInitializeTimeout,
+		StartupContext:      m.ctx,
 	})
 	createDuration := time.Since(createStart)
 
@@ -1102,10 +1103,13 @@ func (m *ACPProcessManager) SendAuxiliaryInstructions(ctx context.Context, works
 	if process == nil {
 		return fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
 	}
+	if err := m.prepareAuxiliaryDispatch(ctx, workspaceUUID, purpose, process, auxState); err != nil {
+		return err
+	}
 
 	auxState.client.reset()
 
-	_, err = process.Prompt(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: instructions}}})
+	_, err = process.PromptWithAdmission(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: instructions}}}, m.auxiliaryPromptAdmission(workspaceUUID, purpose, process, auxState))
 	if err != nil {
 		if ctx.Err() != nil {
 			m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
@@ -1155,6 +1159,10 @@ func (m *ACPProcessManager) promptAuxiliary(ctx context.Context, workspaceUUID, 
 		auxState.mu.Unlock()
 		return "", fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
 	}
+	if err := m.prepareAuxiliaryDispatch(ctx, workspaceUUID, purpose, process, auxState); err != nil {
+		auxState.mu.Unlock()
+		return "", err
+	}
 
 	// Reset the response buffer
 	auxState.client.reset()
@@ -1170,7 +1178,7 @@ func (m *ACPProcessManager) promptAuxiliary(ctx context.Context, workspaceUUID, 
 			"model_reported", modelReported)
 	}
 	trace.beginAttempt(auxState, false)
-	_, err = process.Prompt(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+	_, err = process.PromptWithAdmission(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}}, m.auxiliaryPromptAdmission(workspaceUUID, purpose, process, auxState))
 	trace.recordResponse(auxState.client)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -1219,6 +1227,10 @@ func (m *ACPProcessManager) promptAuxiliary(ctx context.Context, workspaceUUID, 
 			auxState.mu.Unlock()
 			return "", fmt.Errorf("shared process for workspace %s disappeared on retry (process may have exited)", workspaceUUID)
 		}
+		if err := m.prepareAuxiliaryDispatch(ctx, workspaceUUID, purpose, process, auxState); err != nil {
+			auxState.mu.Unlock()
+			return "", err
+		}
 
 		auxState.client.reset()
 		if m.logger != nil {
@@ -1232,7 +1244,7 @@ func (m *ACPProcessManager) promptAuxiliary(ctx context.Context, workspaceUUID, 
 				"retry", true)
 		}
 		trace.beginAttempt(auxState, true)
-		_, err = process.Prompt(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+		_, err = process.PromptWithAdmission(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}}, m.auxiliaryPromptAdmission(workspaceUUID, purpose, process, auxState))
 		trace.recordResponse(auxState.client)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -1294,6 +1306,11 @@ func (m *ACPProcessManager) promptFollowUpAuxiliaryOnce(ctx context.Context, wor
 			state.mu.Unlock()
 			return "", fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
 		}
+		if err := m.prepareAuxiliaryDispatch(ctx, workspaceUUID, purpose, process, state); err != nil {
+			m.retireAuxSession(process, workspaceUUID, purpose, state)
+			state.mu.Unlock()
+			return "", err
+		}
 		state.lastUsed = time.Now()
 		state.client.reset()
 		if m.logger != nil {
@@ -1307,7 +1324,7 @@ func (m *ACPProcessManager) promptFollowUpAuxiliaryOnce(ctx context.Context, wor
 				"retry", attempt > 0)
 		}
 		trace.beginAttempt(state, attempt > 0)
-		_, promptErr := process.Prompt(ctx, state.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+		_, promptErr := process.PromptWithAdmission(ctx, state.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}}, m.auxiliaryPromptAdmission(workspaceUUID, purpose, process, state))
 		trace.recordResponse(state.client)
 		if promptErr == nil {
 			response := state.client.getResponse()
@@ -1413,18 +1430,10 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 		return fmt.Errorf("failed to get auxiliary session: %w", err)
 	}
 
-	// Try to acquire the mutex with context cancellation support
-	acquired := make(chan struct{})
-	go func() {
-		auxState.mu.Lock()
-		close(acquired)
-	}()
-
-	select {
-	case <-acquired:
-		// Successfully acquired the lock — we'll release it in the background goroutine
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled while waiting for auxiliary session lock: %w", ctx.Err())
+	// Acquire with context cancellation support; the lock is released in the
+	// background goroutine once the agent finishes.
+	if err := acquireAuxLock(ctx, auxState); err != nil {
+		return err
 	}
 
 	// Update last used time
@@ -1434,6 +1443,10 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 	if process == nil {
 		auxState.mu.Unlock()
 		return fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
+	}
+	if err := m.prepareAuxiliaryDispatch(ctx, workspaceUUID, purpose, process, auxState); err != nil {
+		auxState.mu.Unlock()
+		return err
 	}
 
 	// Reset the response buffer
@@ -1457,7 +1470,7 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 		waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		trace.beginAttempt(auxState, false)
-		_, promptErr := process.Prompt(waitCtx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+		_, promptErr := process.PromptWithAdmission(waitCtx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}}, m.auxiliaryPromptAdmission(workspaceUUID, purpose, process, auxState))
 		trace.recordResponse(auxState.client)
 		m.logAuxPromptOutcome(waitCtx, trace, promptErr)
 	}()
@@ -2095,8 +2108,14 @@ func (m *ACPProcessManager) auxiliaryModelUnavailable(workspaceUUID, purpose, se
 // active policy, an unknown or hidden agent default cannot survive without an
 // eligible catalog fallback.
 func (m *ACPProcessManager) resolveAuxiliaryModel(ws *config.WorkspaceSettings, raw *conversation.SessionModelState, configuredServer, workspaceUUID, purpose string) (string, bool, error) {
+	return m.resolveAuxiliaryModelWithPolicy(ws, raw, m.auxiliaryPolicy(configuredServer), workspaceUUID, purpose)
+}
+
+// resolveAuxiliaryModelWithPolicy is the pure resolver for a specific policy
+// snapshot. Callers capture the policy before entering any final admission
+// callback so profile/tag provider callbacks never run under the policy lock.
+func (m *ACPProcessManager) resolveAuxiliaryModelWithPolicy(ws *config.WorkspaceSettings, raw *conversation.SessionModelState, policy *config.HiddenModelPolicy, workspaceUUID, purpose string) (string, bool, error) {
 	configured, selector := m.auxiliarySelector(ws)
-	policy := m.auxiliaryPolicy(configuredServer)
 	if policy == nil {
 		if !configured {
 			if raw == nil {
@@ -2178,6 +2197,85 @@ func (m *ACPProcessManager) reconcileAuxiliarySession(ctx context.Context, works
 	}
 	state.setModelID(target)
 	return nil
+}
+
+func (m *ACPProcessManager) auxiliaryWorkspaceSettings(workspaceUUID string) *config.WorkspaceSettings {
+	if m.WorkspaceConfigProvider == nil {
+		return nil
+	}
+	return m.WorkspaceConfigProvider(workspaceUUID)
+}
+
+// prepareAuxiliaryDispatch reconciles the auxiliary model after the caller has
+// acquired the session turn lock. Queued work therefore re-evaluates the
+// current policy instead of inheriting the decision made when it was enqueued.
+func (m *ACPProcessManager) prepareAuxiliaryDispatch(ctx context.Context, workspaceUUID, purpose string, process *SharedACPProcess, state *auxiliarySessionState) error {
+	return m.reconcileAuxiliarySession(ctx, workspaceUUID, purpose, process, state, m.auxiliaryWorkspaceSettings(workspaceUUID))
+}
+
+// auxiliaryPromptAdmission returns the final pre-RPC gate for one auxiliary
+// prompt attempt. It resolves against a captured immutable policy snapshot
+// first (profile/tag providers are callbacks and must not run under the policy
+// lock), then pins that same snapshot to prove no publication slipped in
+// between resolution and transport handoff.
+func (m *ACPProcessManager) auxiliaryPromptAdmission(workspaceUUID, purpose string, process *SharedACPProcess, state *auxiliarySessionState) func() error {
+	return func() error {
+		return m.admitAuxiliaryDispatch(process, workspaceUUID, purpose, state, m.auxiliaryWorkspaceSettings(workspaceUUID))
+	}
+}
+
+func (m *ACPProcessManager) admitAuxiliaryDispatch(process *SharedACPProcess, workspaceUUID, purpose string, state *auxiliarySessionState, ws *config.WorkspaceSettings) error {
+	if !state.matchesProcess(process, workspaceUUID) {
+		return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", "", "auxiliary session provenance no longer matches the shared process", nil)
+	}
+	if m.HiddenModelPolicies == nil {
+		return nil
+	}
+	snapshot := m.HiddenModelPolicies.Snapshot()
+	if snapshot == nil {
+		return nil
+	}
+	server := process.config.ACPServer
+	policy := snapshot.Policy(server)
+	raw := state.rawModelState()
+	if policy != nil && (raw == nil || raw.Synthesized || raw.CurrentModelId == "") {
+		return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", "", "agent did not provide a verifiable model catalog and current model", nil)
+	}
+	if raw != nil && !raw.Synthesized && raw.CurrentModelId != "" {
+		target, shouldSet, err := m.resolveAuxiliaryModelWithPolicy(ws, raw, policy, workspaceUUID, purpose)
+		if err != nil {
+			return err
+		}
+		if shouldSet || target != raw.CurrentModelId {
+			return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", raw.CurrentModelId, "hidden-model policy changed after reconciliation; a confirmed eligible model is required before dispatch", nil)
+		}
+	}
+	return m.HiddenModelPolicies.Admit(func(current *config.HiddenModelSnapshot) error {
+		if current != snapshot {
+			return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", "", "hidden-model policy changed during final auxiliary admission", nil)
+		}
+		if current == nil {
+			return nil
+		}
+		currentPolicy := current.Policy(server)
+		if currentPolicy == nil {
+			return nil
+		}
+		if raw == nil || raw.Synthesized || raw.CurrentModelId == "" {
+			return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", "", "agent did not provide a verifiable model catalog and current model", nil)
+		}
+		displayName := ""
+		for _, model := range raw.AvailableModels {
+			if model.ModelId == raw.CurrentModelId {
+				displayName = model.Name
+				break
+			}
+		}
+		if currentPolicy.Hides(raw.CurrentModelId, displayName) {
+			return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", raw.CurrentModelId, "current model is hidden by policy", nil)
+		}
+		return nil
+	})
 }
 
 func (s *auxiliarySessionState) modelForLog() (string, bool) {
@@ -2370,6 +2468,13 @@ func acquireAuxLock(ctx context.Context, auxState *auxiliarySessionState) error 
 	case <-acquired:
 		return nil
 	case <-ctx.Done():
+		// The waiter goroutine may still be blocked on the mutex. Hand
+		// ownership of the eventual acquisition to a reaper so a cancelled
+		// caller never leaves the session permanently locked.
+		go func() {
+			<-acquired
+			auxState.mu.Unlock()
+		}()
 		return fmt.Errorf("context cancelled while waiting for auxiliary session lock: %w", ctx.Err())
 	}
 }

@@ -2639,6 +2639,132 @@ func TestResolveAuxiliaryModel_HiddenSelectorsRemainStrict(t *testing.T) {
 	}
 }
 
+func TestAdmitAuxiliaryDispatch_RejectsPolicyPublishedAfterReconciliation(t *testing.T) {
+	var policies config.HiddenModelPolicies
+	initial, err := policies.Prepare([]config.ACPServer{{Name: "server"}})
+	if err != nil || !policies.Publish(initial) {
+		t.Fatalf("publish initial policy: %v", err)
+	}
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+	m.HiddenModelPolicies = &policies
+
+	process := &SharedACPProcess{config: SharedACPProcessConfig{ACPServer: "server", WorkingDir: "/workspace"}}
+	state := &auxiliarySessionState{
+		workspaceUUID:     "ws",
+		configuredServer:  "server",
+		sessionFolder:     "/workspace",
+		process:           process,
+		processGeneration: process.Generation(),
+		modelID:           "old",
+		rawModels: &conversation.SessionModelState{CurrentModelId: "old", AvailableModels: []conversation.ModelInfo{
+			{ModelId: "old", Name: "Old"}, {ModelId: "new", Name: "New"},
+		}},
+	}
+
+	// The turn was prepared while old was eligible.
+	next, err := policies.Prepare([]config.ACPServer{{Name: "server", HiddenModels: []string{"^old$"}}})
+	if err != nil || !policies.Publish(next) {
+		t.Fatalf("publish hiding policy: %v", err)
+	}
+	err = m.admitAuxiliaryDispatch(process, "ws", "title-gen", state, nil)
+	if err == nil {
+		t.Fatal("final admission accepted a model hidden after preparation")
+	}
+	var unavailable *mittoAcp.AuxiliaryModelUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("admission error = %v, want AuxiliaryModelUnavailableError", err)
+	}
+}
+
+func TestAdmitAuxiliaryDispatch_RejectsPublicationDuringResolution(t *testing.T) {
+	var policies config.HiddenModelPolicies
+	initial, err := policies.Prepare([]config.ACPServer{{Name: "server"}})
+	if err != nil || !policies.Publish(initial) {
+		t.Fatalf("publish initial policy: %v", err)
+	}
+	hidden, err := policies.Prepare([]config.ACPServer{{Name: "server", HiddenModels: []string{"^old$"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+	m.HiddenModelPolicies = &policies
+	// Simulate a settings save landing while the final admission is still
+	// resolving the configured profile, i.e. after the snapshot was captured.
+	m.ModelProfileResolver = func(string) *config.ModelProfile {
+		policies.Publish(hidden)
+		return &config.ModelProfile{Criteria: &config.ACPServerConstraint{MatchMode: "exact", Pattern: "old"}}
+	}
+
+	process := &SharedACPProcess{config: SharedACPProcessConfig{ACPServer: "server", WorkingDir: "/workspace"}}
+	state := &auxiliarySessionState{
+		workspaceUUID:     "ws",
+		configuredServer:  "server",
+		sessionFolder:     "/workspace",
+		process:           process,
+		processGeneration: process.Generation(),
+		modelID:           "old",
+		rawModels: &conversation.SessionModelState{CurrentModelId: "old", AvailableModels: []conversation.ModelInfo{
+			{ModelId: "old", Name: "Old"}, {ModelId: "new", Name: "New"},
+		}},
+	}
+	ws := &config.WorkspaceSettings{AuxiliaryModelProfile: "p"}
+	if err := m.admitAuxiliaryDispatch(process, "ws", "title-gen", state, ws); err == nil {
+		t.Fatal("admission accepted a policy published during resolution")
+	}
+}
+
+func TestSetSessionModelPolicyPublishedWhileQueuedBlocks(t *testing.T) {
+	var policies config.HiddenModelPolicies
+	initial, err := policies.Prepare([]config.ACPServer{{Name: "server"}})
+	if err != nil || !policies.Publish(initial) {
+		t.Fatalf("publish initial policy: %v", err)
+	}
+	p := &SharedACPProcess{
+		config:      SharedACPProcessConfig{ACPServer: "server", HiddenModelPolicies: &policies},
+		conn:        new(acp.ClientSideConnection),
+		processDone: make(chan struct{}),
+		setModelSem: make(chan struct{}, 1),
+	}
+	// Another caller holds the serialization slot while the policy changes.
+	p.setModelSem <- struct{}{}
+	done := make(chan error, 1)
+	go func() {
+		done <- p.SetSessionModel(context.Background(), "session-id", "selected-model")
+	}()
+	next, err := policies.Prepare([]config.ACPServer{{Name: "server", HiddenModels: []string{"^selected-model$"}}})
+	if err != nil || !policies.Publish(next) {
+		t.Fatalf("publish hiding policy: %v", err)
+	}
+	<-p.setModelSem // release the slot; the queued caller must not issue the RPC
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "hidden by current policy") {
+			t.Fatalf("queued SetSessionModel error = %v, want current-policy refusal", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued SetSessionModel did not return")
+	}
+	if got := len(p.setModelSem); got != 0 {
+		t.Fatalf("set_model serialization slot leaked: len=%d", got)
+	}
+}
+
+func TestPromptWithAdmissionRefusesBeforeTransport(t *testing.T) {
+	p := &SharedACPProcess{conn: newUnresponsiveACPPeerConn()}
+	blocked := errors.New("dispatch blocked by policy")
+	start := time.Now()
+	_, err := p.PromptWithAdmission(context.Background(), "session-id", nil, func() error { return blocked })
+	if !errors.Is(err, blocked) {
+		t.Fatalf("PromptWithAdmission error = %v, want admission refusal", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("admission refusal took %v; the prompt RPC ran before admission", elapsed)
+	}
+}
+
 func TestAuxiliarySessionState_RequiresMatchingProcessProvenance(t *testing.T) {
 	process := &SharedACPProcess{config: SharedACPProcessConfig{ACPServer: "server", WorkingDir: "/workspace"}, generation: 3}
 	state := &auxiliarySessionState{
