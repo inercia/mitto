@@ -576,3 +576,156 @@ func TestChildReportWait_HandlerFrozenOutputAndCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestChildReportWait_HandlerGenuineReportClearsDiagnosticOnSameTaskRetry(t *testing.T) {
+	for _, diagnostic := range []struct {
+		name string
+		mark func(*childReportCollector, string) error
+	}{
+		{name: "idle", mark: func(c *childReportCollector, child string) error {
+			return c.markChildAutoCompleted(child, "agent_idle")
+		}},
+		{name: "send failure", mark: func(c *childReportCollector, child string) error {
+			return c.markChildFailed(child, "queued send failed")
+		}},
+	} {
+		t.Run(diagnostic.name, func(t *testing.T) {
+			srv, store, parent, children := setupParentChildSessions(t, 1)
+			child := children[0]
+			collector, err := srv.getOrCreateCollector(parent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			collector.startTestWait("A", children)
+			if err := diagnostic.mark(collector, child); err != nil {
+				t.Fatal(err)
+			}
+			collector.clearWait(collector.waitOwner)
+
+			started, release := make(chan struct{}), make(chan struct{})
+			srv.sessionManager = &reportWaitBarrierManager{
+				mockSessionManagerForAutoResume: &mockSessionManagerForAutoResume{},
+				onWaiting: func(waiting bool) {
+					if waiting {
+						close(started)
+						<-release
+					}
+				},
+			}
+			done := startTaskScopeWait(t, srv, context.Background(), ChildrenTasksWaitInput{
+				SelfID: parent, ChildrenList: children, TaskID: "A", Prompt: "retry A", TimeoutSeconds: 5,
+			})
+			<-started
+			if _, report, err := srv.handleChildrenTasksReport(context.Background(), nil, ChildrenTasksReportInput{
+				SelfID: child, TaskID: "A", Status: "completed", Summary: "genuine retry result",
+			}); err != nil || !report.Success {
+				t.Fatalf("genuine report: %+v %v", report, err)
+			}
+			close(release)
+			got := <-done
+			info := got.output.Reports[child]
+			if got.err != nil || !got.output.Success || got.output.TimedOut || !info.Completed || !info.TaskTerminal || !info.WaitResolved ||
+				info.Status != "completed" || info.Diagnostic != nil || info.Report == nil || info.Report.Summary != "genuine retry result" {
+				t.Fatalf("genuine retry inherited diagnostic state: %+v %v", got.output, got.err)
+			}
+			msgs, err := store.Queue(child).List()
+			if err != nil || len(msgs) != 1 || !strings.Contains(msgs[0].Message, `task_id: "A"`) {
+				t.Fatalf("same-task retry was not admitted: %v %v", msgs, err)
+			}
+		})
+	}
+}
+
+func TestChildReportWait_HandlerStatusCorrectionsPreserveHistory(t *testing.T) {
+	srv, _, parent, children := setupParentChildSessions(t, 1)
+	child := children[0]
+	started, release := make(chan struct{}), make(chan struct{})
+	srv.sessionManager = &reportWaitBarrierManager{
+		mockSessionManagerForAutoResume: &mockSessionManagerForAutoResume{},
+		onWaiting: func(waiting bool) {
+			if waiting {
+				close(started)
+				<-release
+			}
+		},
+	}
+	first := startTaskScopeWait(t, srv, context.Background(), ChildrenTasksWaitInput{SelfID: parent, ChildrenList: children, TaskID: "A", TimeoutSeconds: 5})
+	<-started
+	for _, report := range []ChildrenTasksReportInput{
+		{SelfID: child, TaskID: "A", Status: "in_progress", Summary: "progress one"},
+		{SelfID: child, TaskID: "A", Status: "completed", Summary: "completed"},
+	} {
+		if _, out, err := srv.handleChildrenTasksReport(context.Background(), nil, report); err != nil || !out.Success {
+			t.Fatalf("initial report: %+v %v", out, err)
+		}
+	}
+	close(release)
+	firstResult := <-first
+	if firstResult.err != nil || !firstResult.output.Success || firstResult.output.TimedOut || !firstResult.output.Reports[child].Completed || firstResult.output.Reports[child].Report.Status != "completed" {
+		t.Fatalf("completed projection: %+v %v", firstResult.output, firstResult.err)
+	}
+
+	for _, report := range []ChildrenTasksReportInput{
+		{SelfID: child, TaskID: "A", Status: "failed", Summary: "corrected failure"},
+		{SelfID: child, TaskID: "A", Status: "in_progress", Summary: "progress two"},
+	} {
+		if _, out, err := srv.handleChildrenTasksReport(context.Background(), nil, report); err != nil || !out.Success {
+			t.Fatalf("correction report: %+v %v", out, err)
+		}
+	}
+	collector, err := srv.getOrCreateCollector(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector.mu.Lock()
+	entries := append([]childReportEntry(nil), collector.entries...)
+	collector.mu.Unlock()
+	if len(entries) != 4 || entries[0].ID == entries[1].ID || entries[1].ID == entries[2].ID || entries[2].ID == entries[3].ID ||
+		!strings.Contains(string(entries[0].Report), "progress one") || !strings.Contains(string(entries[1].Report), "completed") ||
+		!strings.Contains(string(entries[2].Report), "corrected failure") || !strings.Contains(string(entries[3].Report), "progress two") {
+		t.Fatalf("history was not immutable append order: %+v", entries)
+	}
+	srv.sessionManager = nil // The one-shot activation barrier guarded only the first handler call.
+	_, next, err := srv.handleChildrenTasksWait(context.Background(), nil, ChildrenTasksWaitInput{SelfID: parent, ChildrenList: children, TaskID: "A", TimeoutSeconds: 1})
+	info := next.Reports[child]
+	if err != nil || !next.Success || !next.TimedOut || info.Completed || info.TaskTerminal || info.WaitResolved || info.Status != "in_progress" || info.Report == nil || info.Report.Summary != "progress two" {
+		t.Fatalf("latest progress was not selected: %+v %v", next, err)
+	}
+}
+
+func TestChildReportWait_HandlerFrozenOutputUsesCorrectionOnNextWait(t *testing.T) {
+	srv, _, parent, children := setupParentChildSessions(t, 1)
+	child := children[0]
+	started, release := make(chan struct{}), make(chan struct{})
+	srv.sessionManager = &reportWaitBarrierManager{
+		mockSessionManagerForAutoResume: &mockSessionManagerForAutoResume{},
+		onWaiting: func(waiting bool) {
+			if waiting {
+				close(started)
+				<-release
+			}
+		},
+	}
+	first := startTaskScopeWait(t, srv, context.Background(), ChildrenTasksWaitInput{SelfID: parent, ChildrenList: children, TaskID: "A", TimeoutSeconds: 5})
+	<-started
+	if _, out, err := srv.handleChildrenTasksReport(context.Background(), nil, ChildrenTasksReportInput{SelfID: child, TaskID: "A", Status: "completed", Summary: "first result"}); err != nil || !out.Success {
+		t.Fatalf("first report: %+v %v", out, err)
+	}
+	close(release)
+	frozen := <-first
+	if frozen.err != nil || !frozen.output.Success || frozen.output.TimedOut || !frozen.output.Reports[child].Completed || frozen.output.Reports[child].Report.Status != "completed" {
+		t.Fatalf("first output was not completed: %+v %v", frozen.output, frozen.err)
+	}
+	if _, out, err := srv.handleChildrenTasksReport(context.Background(), nil, ChildrenTasksReportInput{SelfID: child, TaskID: "A", Status: "failed", Summary: "later correction"}); err != nil || !out.Success {
+		t.Fatalf("correction report: %+v %v", out, err)
+	}
+	if !frozen.output.Reports[child].Completed || frozen.output.Reports[child].Report.Status != "completed" || frozen.output.Reports[child].Report.Summary != "first result" {
+		t.Fatalf("later correction rewrote frozen output: %+v", frozen.output)
+	}
+	srv.sessionManager = nil // The one-shot activation barrier guarded only the first handler call.
+	_, next, err := srv.handleChildrenTasksWait(context.Background(), nil, ChildrenTasksWaitInput{SelfID: parent, ChildrenList: children, TaskID: "A", TimeoutSeconds: 1})
+	info := next.Reports[child]
+	if err != nil || !next.Success || next.TimedOut || info.Completed || !info.TaskTerminal || !info.WaitResolved || info.Status != "failed" || info.Report == nil || info.Report.Summary != "later correction" {
+		t.Fatalf("next wait did not use correction: %+v %v", next, err)
+	}
+}
