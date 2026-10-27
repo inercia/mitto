@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -670,10 +671,9 @@ type WorkspaceUINotifyOutput struct {
 // Reports are persisted beside the parent session so suspension and process
 // restart cannot discard an accepted result.
 //
-// Reports are scoped by task_id. When the parent starts waiting for a new task,
-// only reports from the previous (different) task are cleared. Reports for the
-// same task are preserved across wait cycles, so children that already reported
-// don't need to report again on retry.
+// Append-only evidence is selected by its durable task association. Changing
+// tasks changes the projection, never history; matching terminal evidence can
+// be reused across wait cycles without asking the child to report again.
 type childReportCollector struct {
 	parentSessionID string
 	currentTaskID   string                  // task_id of the current/last wait cycle
@@ -688,9 +688,9 @@ type childReportCollector struct {
 	// Optional per-collector persistence seam for deterministic failure tests.
 	writeHistory func(childReportHistoryState) error
 
-	// Wait signaling: non-nil only while a parent is actively waiting via mitto_children_tasks_wait.
-	// Closing waitCh unblocks the waiting parent.
-	waitCh     chan struct{}   // closed when all waitingFor children have reported
+	// Wait signaling stays owned through handler cleanup, including after the
+	// frozen result has closed the channel and ended the inference window.
+	waitCh     chan struct{}   // closed on resolution or deadline finalization
 	waitingFor map[string]bool // child IDs the parent is blocking on
 
 	// Track when we first started waiting for each child (per task).
@@ -698,36 +698,27 @@ type childReportCollector struct {
 	// Reset when task_id changes.
 	firstWaitTime map[string]time.Time // child_id -> first wait start time
 
-	// lastWaitEnd is when the previous wait cycle finished. An unscoped report
-	// (one the child filed without a task_id) is only preserved across a task
-	// change when it arrived after this instant, so a report from an earlier
-	// task cannot satisfy a new one.
-	lastWaitEnd time.Time
+	// Reservation precedes resume/queue/UI effects. Finalization ends inference,
+	// but the handler keeps ownership until its owner-checked deferred cleanup.
+	waitOwner *childReportWait
 }
 
-// noteWaitEnd records that a wait cycle finished, so a later task change can
-// distinguish a fresh unscoped report from a stale one.
-func (c *childReportCollector) noteWaitEnd() {
+type childReportWait struct {
+	active    bool
+	finalized bool
+	timedOut  bool
+	snapshot  map[string]childReportProjection
+}
+
+func (c *childReportCollector) reserveWait() (*childReportWait, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.lastWaitEnd = time.Now()
-}
-
-// reportSurvivesTaskChange reports whether r should be kept when the parent
-// starts waiting for taskID. A report is kept when it is already filed for the
-// new task, or when it is a genuine report that carries no task_id (the child
-// was never told one) and arrived after the previous wait ended.
-func (c *childReportCollector) reportSurvivesTaskChange(r *childReport, taskID string) bool {
-	if r == nil || !r.Completed {
-		return false
+	if c.waitOwner != nil {
+		return nil, fmt.Errorf("another child wait is already in progress for this parent; retry later")
 	}
-	if r.TaskID == taskID {
-		return true
-	}
-	if r.AutoCompleted || r.Failed || r.TaskMismatch {
-		return false
-	}
-	return r.TaskID == "" && r.Timestamp.After(c.lastWaitEnd)
+	owner := &childReportWait{}
+	c.waitOwner = owner
+	return owner, nil
 }
 
 // addReport stores a child's report. Any child can report at any time.
@@ -738,7 +729,7 @@ func (c *childReportCollector) reportSurvivesTaskChange(r *childReport, taskID s
 func (c *childReportCollector) addReport(childID string, taskID string, report json.RawMessage) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	wasWaiting := c.waitCh != nil && c.waitingFor[childID]
+	wasWaiting := c.waitOwner != nil && c.waitOwner.active && c.waitingFor[childID]
 
 	association, effective := childReportUnassociated, ""
 	if taskID != "" {
@@ -752,32 +743,43 @@ func (c *childReportCollector) addReport(childID string, taskID string, report j
 	}
 	candidate := c.historyLocked()
 	candidate.Entries = append(candidate.Entries, entry)
-	delete(candidate.Diagnostics, childID)
+	// Only an applicable update supersedes this task's liveness observation.
+	if childReportAppliesToTask(entry, c.currentTaskID) {
+		delete(candidate.Diagnostics, childID)
+	}
 	if err := c.persistHistoryLocked(candidate); err != nil {
 		return wasWaiting, err
 	}
 	c.entries, c.diagnostics = candidate.Entries, candidate.Diagnostics
-	if c.reports == nil {
-		c.reports = make(map[string]*childReport)
-	}
-	c.reports[childID] = entry.compatibilityReport()
+	c.refreshReportLocked(childID)
 
 	c.checkAndSignalWait()
 	return wasWaiting, nil
 }
 
-// resetAutoCompletedForRetry returns synthetic results to pending before an
-// explicit retry prompt is sent. Genuine reports and terminal failures remain.
-func (c *childReportCollector) resetAutoCompletedForRetry(childIDs []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for _, childID := range childIDs {
-		if r := c.reports[childID]; r != nil && r.AutoCompleted {
-			c.reports[childID] = nil
-			delete(c.diagnostics, childID)
-		}
+// projectionLocked is the sole evidence selector. Compatibility slots are never
+// consulted for task terminality, signaling, timers or dispatch.
+func (c *childReportCollector) projectionLocked(childID string) childReportProjection {
+	d, ok := c.diagnostics[childID]
+	if ok {
+		return projectChildReport(c.entries, childID, c.currentTaskID, &d)
 	}
+	return projectChildReport(c.entries, childID, c.currentTaskID, nil)
+}
+
+func (c *childReportCollector) refreshReportLocked(childID string) {
+	if c.reports == nil {
+		c.reports = make(map[string]*childReport)
+	}
+	p := c.projectionLocked(childID)
+	var report *childReport
+	if p.Entry != nil {
+		report = p.Entry.compatibilityReport()
+	}
+	if p.Diagnostic != nil && !p.taskTerminal() {
+		report = p.Diagnostic.compatibilityReport(report)
+	}
+	c.reports[childID] = report
 }
 
 // markChildAutoCompleted marks a child as auto-completed when its agent
@@ -788,26 +790,14 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Don't overwrite a real report that already counts toward the current wait.
-	// A stale-task completed report (one whose TaskID doesn't match currentTaskID)
-	// MUST be overwritten — otherwise the wait can never unblock, since the poll
-	// loop's auto-completion becomes a no-op and reportSatisfiesCurrentTask keeps
-	// returning false. Root cause of mitto-kn1.
-	r := c.reports[childID]
-	if r != nil && r.Completed && c.reportSatisfiesCurrentTask(r) {
-		return nil
-	}
-
-	// Never replace a genuine report with a synthetic idle result. A report
-	// scoped to a different task is still evidence: surface it to the parent
-	// with a task-mismatch warning instead of claiming the child never reported.
-	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed {
+	p := c.projectionLocked(childID)
+	if p.Entry != nil && !p.TaskMatches {
 		return c.setDiagnosticLocked(childWaitDiagnostic{ChildID: childID, Kind: childDiagnosticTaskMismatch,
-			Reason: reason, ObservedAt: time.Now(), TaskID: r.TaskID})
+			Reason: reason, ObservedAt: time.Now(), TaskID: c.currentTaskID})
 	}
 
 	return c.setDiagnosticLocked(childWaitDiagnostic{ChildID: childID, Kind: childDiagnosticAutoCompleted,
-		Reason: reason, ObservedAt: time.Now()})
+		Reason: reason, ObservedAt: time.Now(), TaskID: c.currentTaskID})
 }
 
 // markChildFailed marks a child as failed due to a queued-send error, so the
@@ -816,16 +806,8 @@ func (c *childReportCollector) markChildFailed(childID string, msg string) error
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Don't overwrite a real report that already counts toward the current wait.
-	// See markChildAutoCompleted / mitto-kn1 for rationale — a stale-task completed
-	// report must be overwritable so the queued-send failure can surface.
-	r := c.reports[childID]
-	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed && c.reportSatisfiesCurrentTask(r) {
-		return nil
-	}
-
 	return c.setDiagnosticLocked(childWaitDiagnostic{ChildID: childID, Kind: childDiagnosticFailed,
-		Message: msg, ObservedAt: time.Now()})
+		Message: msg, ObservedAt: time.Now(), TaskID: c.currentTaskID})
 }
 
 func (c *childReportCollector) markChildStuck(childID, taskID string) error {
@@ -838,167 +820,137 @@ func (c *childReportCollector) markChildStuck(childID, taskID string) error {
 // Diagnostic publication uses the same durable boundary but never appends or
 // edits genuine entries. Its compatibility flags cannot leak into acceptance.
 func (c *childReportCollector) setDiagnosticLocked(d childWaitDiagnostic) error {
+	if d.TaskID != c.currentTaskID || c.projectionLocked(d.ChildID).taskTerminal() ||
+		(c.waitOwner != nil && c.waitOwner.finalized) {
+		return nil
+	}
 	candidate := c.historyLocked()
 	candidate.Diagnostics[d.ChildID] = d
 	if err := c.persistHistoryLocked(candidate); err != nil {
 		return err
 	}
 	c.diagnostics = candidate.Diagnostics
-	if c.reports == nil {
-		c.reports = make(map[string]*childReport)
-	}
-	c.reports[d.ChildID] = d.compatibilityReport(c.reports[d.ChildID])
+	c.refreshReportLocked(d.ChildID)
 	c.checkAndSignalWait()
 	return nil
 }
 
-// reportSatisfiesCurrentTask returns true if the given report counts as a completed
-// result for the current wait's task. Must be called with c.mu held.
-//
-// A report satisfies the current task when:
-//   - it is non-nil and marked Completed, AND
-//   - either: no task scoping is in effect (currentTaskID == ""),
-//     OR: the report carries the matching task_id,
-//     OR: the report carries no task_id at all (the child was never told one;
-//     it cannot be scoped, and the collector already dropped stale unscoped
-//     reports when the task changed),
-//     OR: the entry was auto-completed (agent_idle / session_stopped, which carry
-//     no real task_id and must always count toward completion),
-//     OR: the entry was failed (queued-send error, which also carries no real task_id),
-//     OR: the entry was flagged as a task mismatch (a genuine report for another
-//     task; it must terminate the wait so the parent sees the evidence).
-func (c *childReportCollector) reportSatisfiesCurrentTask(r *childReport) bool {
-	if r == nil || !r.Completed {
-		return false
-	}
-	if r.TaskID == "" && !r.AutoCompleted && !r.Failed {
-		return true
-	}
-	return c.currentTaskID == "" || r.TaskID == c.currentTaskID || r.AutoCompleted || r.Failed || r.TaskMismatch
-}
-
-// checkAndSignalWait checks if all waited-on children have reported and signals if so.
+// checkAndSignalWait freezes the result and ends inference before signaling.
 // Must be called with c.mu held.
 func (c *childReportCollector) checkAndSignalWait() {
-	if c.waitCh == nil {
-		return // No one waiting
+	if c.waitOwner == nil || !c.waitOwner.active {
+		return
 	}
 	for childID := range c.waitingFor {
-		r := c.reports[childID]
-		if !c.reportSatisfiesCurrentTask(r) {
-			return // Still waiting on this child
+		if !c.projectionLocked(childID).waitResolved() {
+			return
 		}
 	}
-	// All waited-on children have reported
-	select {
-	case <-c.waitCh:
-		// Already closed
-	default:
-		close(c.waitCh)
-	}
+	c.freezeWaitLocked(false)
 }
 
-// startWait sets up wait signaling for the given children.
-//
-// Task-scoped cleanup: if taskID differs from the previous wait's task, all
-// reports are cleared (new task = clean slate). If taskID matches the previous
-// wait (e.g. retry after timeout), existing reports for the same task are
-// preserved so children that already reported don't need to report again.
-//
-// Returns (waitCh, alreadyDone). If alreadyDone is true, caller should not block.
-func (c *childReportCollector) startWait(taskID string, childIDs []string) (chan struct{}, bool) {
+// startWait activates an existing reservation only after its task/diagnostic
+// candidate is durable. A reserved handler is not yet an inference window.
+func (c *childReportCollector) startWait(owner *childReportWait, taskID string, childIDs []string, retry bool) (chan struct{}, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Only clear reports when the task changes. Same task = preserve existing reports.
-	if c.currentTaskID == "" {
-		// First wait ever. Adopt the new task ID.
-		// If a task_id is specified, filter out proactive reports that don't match
-		// (child reported with a different task_id before parent started waiting).
-		if taskID != "" {
-			for id, r := range c.reports {
-				if !c.reportSurvivesTaskChange(r, taskID) {
-					delete(c.reports, id)
-					delete(c.diagnostics, id)
-				}
-			}
-		}
-		c.currentTaskID = taskID
-		if c.firstWaitTime == nil {
-			c.firstWaitTime = make(map[string]time.Time)
-		}
-	} else if taskID != c.currentTaskID {
-		// New task: clear all reports, but preserve any that were already
-		// filed with the new taskID (child reported before parent started waiting).
-		oldReports := c.reports
-		c.reports = make(map[string]*childReport, len(childIDs))
-		for _, id := range childIDs {
-			if r := oldReports[id]; c.reportSurvivesTaskChange(r, taskID) {
-				c.reports[id] = r // preserve matching or fresh unscoped report
-			}
-		}
-		for id := range c.diagnostics {
-			if c.reports[id] == nil {
-				delete(c.diagnostics, id)
-			}
-		}
-		c.currentTaskID = taskID
-		c.firstWaitTime = make(map[string]time.Time) // new task = reset stuck tracking
+	if owner == nil || c.waitOwner != owner || owner.active || owner.finalized {
+		return nil, fmt.Errorf("child wait reservation is no longer available; retry later")
 	}
-
-	// Initialize firstWaitTime map if needed (first call ever).
-	if c.firstWaitTime == nil {
+	candidate := c.historyLocked()
+	candidate.CurrentTaskID = taskID
+	for id, diagnostic := range candidate.Diagnostics {
+		if diagnostic.TaskID != taskID {
+			delete(candidate.Diagnostics, id)
+		}
+	}
+	if retry {
+		for _, id := range childIDs {
+			if projectChildReport(candidate.Entries, id, taskID, nil).reconciliationEligible(true) {
+				delete(candidate.Diagnostics, id)
+			}
+		}
+	}
+	if err := c.persistHistoryLocked(candidate); err != nil {
+		return nil, err
+	}
+	if c.currentTaskID != taskID || c.firstWaitTime == nil {
 		c.firstWaitTime = make(map[string]time.Time)
 	}
-
-	// Ensure all requested children have an entry (nil = pending if not already reported)
-	for _, id := range childIDs {
-		if _, exists := c.reports[id]; !exists {
-			c.reports[id] = nil // pending
-		}
-	}
-
-	// Build waitingFor set and record first wait time per child.
+	c.currentTaskID, c.diagnostics = taskID, candidate.Diagnostics
+	c.reports = make(map[string]*childReport, len(childIDs))
 	now := time.Now()
 	c.waitingFor = make(map[string]bool, len(childIDs))
 	for _, id := range childIDs {
 		c.waitingFor[id] = true
+		c.refreshReportLocked(id)
 		if _, exists := c.firstWaitTime[id]; !exists {
-			c.firstWaitTime[id] = now // record when we first started waiting for this child
+			c.firstWaitTime[id] = now
 		}
 	}
-
 	c.waitCh = make(chan struct{})
-
-	// Check if all waited-on children have already reported (for this task)
+	owner.active = true
 	c.checkAndSignalWait()
-
-	select {
-	case <-c.waitCh:
-		return c.waitCh, true // already done
-	default:
-		return c.waitCh, false
-	}
+	return c.waitCh, nil
 }
 
-// clearWait clears the wait signaling. Called when wait returns (completion, timeout, or cancel).
-func (c *childReportCollector) clearWait() {
+// freezeWaitLocked is the resolution/deadline linearization point. Late reports
+// are still accepted but cannot change this owned snapshot or infer association.
+func (c *childReportCollector) freezeWaitLocked(timedOut bool) {
+	owner := c.waitOwner
+	owner.snapshot = make(map[string]childReportProjection, len(c.waitingFor))
+	for id := range c.waitingFor {
+		owner.snapshot[id] = c.projectionLocked(id)
+	}
+	owner.active, owner.finalized, owner.timedOut = false, true, timedOut
+	close(c.waitCh)
+}
+
+func (c *childReportCollector) finalizeWait(owner *childReportWait, timedOut bool) (map[string]childReportProjection, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.waitOwner != owner || owner == nil {
+		return nil, false
+	}
+	if owner.active {
+		c.freezeWaitLocked(timedOut)
+	}
+	return owner.snapshot, owner.timedOut
+}
+
+func (c *childReportCollector) clearWait(owner *childReportWait) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if owner == nil || c.waitOwner != owner {
+		return
+	}
+	owner.active = false
+	c.waitOwner = nil
 	c.waitCh = nil
 	c.waitingFor = nil
 }
 
-// getPendingAndReported returns the lists of child IDs that are still pending
-// and those that have already reported, from the current waitingFor set.
-// Uses the same task-matching logic as checkAndSignalWait so the two views
-// stay consistent: a stale-task report is treated as pending here too.
+// Admission is ordered with report acceptance under mu; queue I/O happens after
+// unlocking. A report committed after admission cannot undo an admitted prompt.
+func (c *childReportCollector) admitPrompt(owner *childReportWait, childID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return owner != nil && c.waitOwner == owner && c.waitingFor[childID] &&
+		!owner.snapshot[childID].taskTerminal() &&
+		c.projectionLocked(childID).reconciliationEligible(true)
+}
+
+// getPendingAndReported partitions wait resolution, not task success. After
+// finalization it uses the frozen boundary, never a later correction.
 func (c *childReportCollector) getPendingAndReported() (pending []string, reported []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for childID := range c.waitingFor {
-		r := c.reports[childID]
-		if c.reportSatisfiesCurrentTask(r) {
+		p := c.projectionLocked(childID)
+		if c.waitOwner != nil && c.waitOwner.finalized {
+			p = c.waitOwner.snapshot[childID]
+		}
+		if p.waitResolved() {
 			reported = append(reported, childID)
 		} else {
 			pending = append(pending, childID)
@@ -1011,7 +963,7 @@ func (c *childReportCollector) getPendingAndReported() (pending []string, report
 func (c *childReportCollector) isWaiting() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.waitCh != nil
+	return c.waitOwner != nil && c.waitOwner.active
 }
 
 // maxChildWaitDuration is the maximum cumulative time a parent may wait for a single child
@@ -1027,9 +979,9 @@ func (c *childReportCollector) getStuckChildren() []string {
 
 	var stuck []string
 	now := time.Now()
-	for childID, firstWait := range c.firstWaitTime {
-		r := c.reports[childID]
-		if (r == nil || !r.Completed) && now.Sub(firstWait) > maxChildWaitDuration {
+	for childID := range c.waitingFor {
+		firstWait := c.firstWaitTime[childID]
+		if !c.projectionLocked(childID).taskTerminal() && !firstWait.IsZero() && now.Sub(firstWait) > maxChildWaitDuration {
 			stuck = append(stuck, childID)
 		}
 	}

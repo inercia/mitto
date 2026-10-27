@@ -43,8 +43,8 @@ func TestChildReportCutoverMigrationAndReload(t *testing.T) {
 		}
 	}
 	// An ordinary wait persist must never replace history with the old DTO.
-	c.startWait("next-task", children)
-	c.clearWait()
+	c.startTestWait("next-task", children)
+	c.clearWait(c.waitOwner)
 	if err := c.persist(); err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +91,7 @@ func TestChildReportCutoverAssociation(t *testing.T) {
 			c.currentTaskID = tc.waitTask
 			if tc.active {
 				c.waitCh = make(chan struct{})
+				c.waitOwner = &childReportWait{active: true}
 			}
 			c.waitingFor = map[string]bool{children[0]: tc.member}
 			payload := append(json.RawMessage(nil), cutoverPayload...)
@@ -102,9 +103,9 @@ func TestChildReportCutoverAssociation(t *testing.T) {
 			if entry.Association != tc.association || entry.EffectiveTaskID != tc.effective || entry.SuppliedTaskID != tc.supplied || !json.Valid(entry.Report) {
 				t.Fatalf("bad association/ownership: %+v", entry)
 			}
-			c.clearWait()
-			c.startWait("different", children)
-			c.clearWait()
+			c.clearWait(c.waitOwner)
+			c.startTestWait("different", children)
+			c.clearWait(c.waitOwner)
 			if err := c.persist(); err != nil {
 				t.Fatal(err)
 			}
@@ -129,8 +130,8 @@ func TestChildReportCutoverFailureBeforePublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wait, _ := c.startWait("task", children)
-	if _, err := c.addReport(children[0], "task", cutoverPayload); err != nil {
+	wait, _ := c.startTestWait("task", children)
+	if _, err := c.addReport(children[0], "task", json.RawMessage(`{"status":"completed","summary":"client evidence","unknown":9007199254740993}`)); err != nil {
 		t.Fatal(err)
 	}
 	prior := c.historyLocked()
@@ -189,7 +190,7 @@ func TestChildReportCutoverFailureBeforePublication(t *testing.T) {
 		t.Fatal("prior acknowledged history lost")
 	}
 	c.writeHistory = nil
-	if _, err := c.addReport(children[1], "task", cutoverPayload); err != nil {
+	if _, err := c.addReport(children[1], "task", json.RawMessage(`{"status":"completed","summary":"client evidence","unknown":9007199254740993}`)); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -205,7 +206,7 @@ func TestChildReportCutoverDeletedParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wait, _ := c.startWait("task", children)
+	wait, _ := c.startTestWait("task", children)
 	if err := store.Delete(parent); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +291,7 @@ func TestChildReportCutoverDiagnostics(t *testing.T) {
 				t.Fatal(err)
 			}
 			original := c.entries[0]
-			c.startWait("new", children)
+			c.startTestWait("new", children)
 			switch origin {
 			case "send_failure":
 				err = c.markChildFailed(children[0], "send failed")
@@ -312,7 +313,7 @@ func TestChildReportCutoverDiagnostics(t *testing.T) {
 			if len(again.diagnostics) != 1 || len(again.entries) != 1 {
 				t.Fatal("diagnostic lost on reload")
 			}
-			c.resetAutoCompletedForRetry(children)
+			// Genuine applicable ingress clears the prior diagnostic transactionally.
 			if _, err := c.addReport(children[0], "new", cutoverPayload); err != nil {
 				t.Fatal(err)
 			}
@@ -323,9 +324,9 @@ func TestChildReportCutoverDiagnostics(t *testing.T) {
 			if len(c.entries) != 2 || !reflect.DeepEqual(original, c.entries[0]) {
 				t.Fatal("diagnostic/reset altered history")
 			}
-			c.clearWait()
-			c.startWait("later", children)
-			c.clearWait()
+			c.clearWait(c.waitOwner)
+			c.startTestWait("later", children)
+			c.clearWait(c.waitOwner)
 			if err := c.persist(); err != nil {
 				t.Fatal(err)
 			}
@@ -342,7 +343,7 @@ func TestChildReportCutoverDiagnostics(t *testing.T) {
 
 func TestChildReportCutoverDiagnosticFailure(t *testing.T) {
 	c, _ := loadChildReportCollector(nil, "parent")
-	wait, _ := c.startWait("task", []string{"child"})
+	wait, _ := c.startTestWait("task", []string{"child"})
 	c.writeHistory = func(childReportHistoryState) error { return errors.New("failed") }
 	if err := c.markChildStuck("child", "task"); err == nil {
 		t.Fatal("missing error")

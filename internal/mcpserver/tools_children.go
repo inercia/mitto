@@ -270,6 +270,17 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	waitDeadline := time.Now().Add(timeout)
 	resumeCtx, cancelResume := context.WithDeadline(ctx, waitDeadline)
 	defer cancelResume()
+	// Reserve before resume, queue, diagnostic or UI effects. Reservation alone
+	// does not associate unscoped reports with the task being prepared.
+	collector, err := s.getOrCreateCollector(realSessionID)
+	if err != nil {
+		return nil, ChildrenTasksWaitOutput{Success: false, Error: err.Error()}, nil
+	}
+	owner, err := collector.reserveWait()
+	if err != nil {
+		return nil, ChildrenTasksWaitOutput{Success: false, Error: err.Error()}, nil
+	}
+	defer collector.clearWait(owner)
 
 	// Validate each child exists and is actually a child of this parent.
 	// Also check if each child is currently running.
@@ -353,15 +364,18 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		}, nil
 	}
 
-	// Get-or-create the persistent child report collector for this parent.
-	collector, err := s.getOrCreateCollector(realSessionID)
+	// Include nonrunning children: their matching terminal evidence is still
+	// authoritative. Retry resets only diagnostics, never genuine entries.
+	promptText := input.Prompt
+	sendPrompt := promptText != ""
+	waitCh, err := collector.startWait(owner, input.TaskID, validChildren, sendPrompt)
 	if err != nil {
-		return nil, ChildrenTasksWaitOutput{Success: false, Error: err.Error()}, nil
+		return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child wait state; retry later: %v", err)}, nil
 	}
 
 	// Server-side safeguard: auto-report children that have been waited on for too long.
 	// This prevents the AI agent from retrying indefinitely when a child is stuck.
-	// We inject a synthetic "stuck" report so that startWait sees them as completed.
+	// Timers are evaluated only after activating this task and child membership.
 	stuckChildren := collector.getStuckChildren()
 	for _, childID := range stuckChildren {
 		s.logger.Warn("Child session considered stuck after prolonged cumulative wait — auto-reporting as stuck",
@@ -373,50 +387,15 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
-	// If ALL valid children are not running, return immediately with not_running status.
-	// We still register them in the collector for record-keeping.
-	if len(runningChildren) == 0 {
-		reports := make(map[string]ChildReportInfo, len(notRunningChildren))
-		for _, childID := range notRunningChildren {
-			reason := "session_closed"
-			if childMeta, err := store.GetMetadata(childID); err == nil && childMeta.Archived {
-				reason = "archived"
-			}
-			reports[childID] = ChildReportInfo{
-				Completed: false,
-				Status:    "not_running",
-				Reason:    reason,
-			}
+	for _, childID := range notRunningChildren {
+		reason := "session_closed"
+		if childMeta, err := store.GetMetadata(childID); err == nil && childMeta.Archived {
+			reason = "archived"
 		}
-		return nil, ChildrenTasksWaitOutput{
-			Success:  true,
-			Reports:  reports,
-			Warnings: warnings,
-		}, nil
+		if err := collector.markChildAutoCompleted(childID, reason); err != nil {
+			return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic; retry later: %v", err)}, nil
+		}
 	}
-
-	// Build the prompt to send to pending children.
-	// If no prompt is provided, skip sending entirely (wait-only mode).
-	// This allows callers to retry waits without re-enqueuing duplicate messages.
-	promptText := input.Prompt
-	sendPrompt := promptText != ""
-	if sendPrompt {
-		// A new prompt explicitly retries children whose prior result was only
-		// synthetic. Leave genuine reports and terminal failures satisfied.
-		collector.resetAutoCompletedForRetry(runningChildren)
-	}
-
-	// Set up wait signaling. startWait only clears reports when the task_id
-	// changes, preserving reports from the same task across retries.
-	waitCh, _ := collector.startWait(input.TaskID, runningChildren)
-	defer collector.clearWait()
-	if err := collector.persist(); err != nil {
-		return nil, ChildrenTasksWaitOutput{
-			Success: false,
-			Error:   fmt.Sprintf("failed to persist child wait state: %v", err),
-		}, nil
-	}
-	childrenToPrompt, _ := collector.getPendingAndReported()
 
 	if sendPrompt {
 		taskIDInstruction := ""
@@ -428,7 +407,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 
 	// Send only to children that still need a report (unless wait-only mode).
 	if sendPrompt {
-		for _, childID := range childrenToPrompt {
+		for _, childID := range runningChildren {
 			queue := store.Queue(childID)
 
 			// Dedup: skip if there's already a pending message from this parent in the child's queue.
@@ -448,6 +427,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 					"child_session", childID)
 				continue
 			}
+			if !collector.admitPrompt(owner, childID) {
+				continue
+			}
 
 			msg, err := queue.AddWithOrigin(promptText, nil, nil, realSessionID, nil, 0, nil, "", session.QueueOriginAgent)
 			if err != nil {
@@ -455,6 +437,9 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 					"parent_session", realSessionID,
 					"child_session", childID,
 					"error", err)
+				if err := collector.markChildFailed(childID, fmt.Sprintf("enqueue failed: %v", err)); err != nil {
+					return nil, ChildrenTasksWaitOutput{Success: false, Error: fmt.Sprintf("failed to persist child diagnostic; retry later: %v", err)}, nil
+				}
 				continue
 			}
 
@@ -535,7 +520,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				// All children reported or auto-completed
 				break waitLoop
 			case <-timeoutTimer.C:
-				timedOut = true
+				_, timedOut = collector.finalizeWait(owner, true)
 				pendingChildren, reportedChildren := collector.getPendingAndReported()
 				stillProcessing := s.stillProcessingChildren(pendingChildren)
 				logChildrenWaitTimeout(s.logger, realSessionID, pendingChildren, reportedChildren, stillProcessing, len(runningChildren), timeout)
@@ -728,7 +713,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		case <-waitCh:
 			// All running children reported
 		case <-time.After(timeout):
-			timedOut = true
+			_, timedOut = collector.finalizeWait(owner, true)
 			pendingChildren, reportedChildren := collector.getPendingAndReported()
 			logChildrenWaitTimeout(s.logger, realSessionID, pendingChildren, reportedChildren, nil, len(runningChildren), timeout)
 		case <-ctx.Done():
@@ -739,55 +724,40 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
-	// Build the output with whatever reports we have
+	// Finalization is mutex-ordered with ingress. A later correction is evidence
+	// for the next wait, not a mutation of this handler's frozen result.
+	snapshot, timedOut := collector.finalizeWait(owner, timedOut)
 	reports := make(map[string]ChildReportInfo, len(validChildren))
-
-	// Add reports from running children (from collector)
-	collector.mu.Lock()
-	for _, childID := range runningChildren {
-		report := collector.reports[childID]
-		info := ChildReportInfo{Completed: false, Status: "pending"}
-		if report != nil && report.Completed {
-			if report.Failed {
-				// Queued-send failed before agent could process the message
-				info.Completed = false
-				info.Status = "failed"
-				info.Reason = report.FailMessage
-				if !report.Timestamp.IsZero() {
-					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
-				}
-			} else if report.AutoCompleted {
-				// Auto-completed: agent went idle without reporting
-				info.Completed = false
-				info.Status = "agent_not_responding"
-				info.Reason = report.AutoReason
-				if !report.Timestamp.IsZero() {
-					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
-				}
-			} else {
-				info.Completed = true
-				info.Status = "completed"
-				// Unmarshal the raw JSON report into the typed struct for proper schema validation
-				if len(report.Report) > 0 {
-					var reportData ChildReportData
-					if err := json.Unmarshal(report.Report, &reportData); err != nil {
-						s.logger.Warn("Failed to unmarshal child report data",
-							"child_session", childID,
-							"error", err)
-					} else {
-						info.Report = &reportData
-					}
-				}
-				if !report.Timestamp.IsZero() {
-					info.Timestamp = report.Timestamp.Format("2006-01-02T15:04:05Z07:00")
-				}
-				if report.TaskMismatch {
-					warnings = append(warnings, fmt.Sprintf(
-						"child %s reported for a different task_id; its report is returned as completed — verify it applies before relying on it",
-						childID))
-				}
+	for _, childID := range validChildren {
+		p := snapshot[childID]
+		info := ChildReportInfo{Completed: p.taskSucceeded(), Status: "pending", Reason: p.Reason}
+		if p.Entry != nil {
+			var data ChildReportData
+			if err := json.Unmarshal(p.Entry.Report, &data); err == nil {
+				info.Report = &data
 			}
-		} else if timedOut {
+			info.Timestamp = p.Entry.ReceivedAt.Format(time.RFC3339)
+			if p.TaskMatches {
+				info.Status = p.Outcome.Status
+			} else {
+				info.Reason = fmt.Sprintf("task mismatch: requested=%q supplied=%q effective=%q association=%s", input.TaskID, p.Entry.SuppliedTaskID, p.Entry.EffectiveTaskID, p.Entry.Association)
+				warnings = append(warnings, fmt.Sprintf("child %s: %s", childID, info.Reason))
+			}
+		}
+		if d := p.Diagnostic; d != nil && !p.taskTerminal() {
+			info.Status = "agent_not_responding"
+			if d.Kind == childDiagnosticFailed {
+				info.Status = "failed"
+			} else if d.Kind == childDiagnosticStuck {
+				info.Status = "stuck"
+			} else if d.Reason == "session_closed" || d.Reason == "archived" {
+				info.Status = "not_running"
+			}
+			if info.Reason != "" {
+				info.Reason += "; "
+			}
+			info.Reason += d.Reason + d.Message
+		} else if timedOut && !p.waitResolved() && info.Reason == "" {
 			// Add diagnostic reason for timed-out children
 			if childReg := s.getSession(childID); childReg == nil {
 				info.Reason = "session_unregistered"
@@ -802,24 +772,6 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 			}
 		}
 		reports[childID] = info
-	}
-	collector.mu.Unlock()
-
-	// Remember when this cycle ended so a later task change can tell a fresh
-	// unscoped report (filed without a task_id) from a stale one.
-	collector.noteWaitEnd()
-
-	// Add not-running children to reports with diagnostic reason
-	for _, childID := range notRunningChildren {
-		reason := "session_closed"
-		if childMeta, err := store.GetMetadata(childID); err == nil && childMeta.Archived {
-			reason = "archived"
-		}
-		reports[childID] = ChildReportInfo{
-			Completed: false,
-			Status:    "not_running",
-			Reason:    reason,
-		}
 	}
 
 	return nil, ChildrenTasksWaitOutput{

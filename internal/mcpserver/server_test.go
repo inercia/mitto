@@ -3103,7 +3103,7 @@ func TestChildrenTasksWait_SameTaskPromptRecoversAutoCompletedChild(t *testing.T
 	if err != nil {
 		t.Fatalf("get collector: %v", err)
 	}
-	waitCh, alreadyDone := collector.startWait(taskID, childIDs)
+	waitCh, alreadyDone := collector.startTestWait(taskID, childIDs)
 	if alreadyDone {
 		t.Fatal("first wait unexpectedly started completed")
 	}
@@ -3113,7 +3113,7 @@ func TestChildrenTasksWait_SameTaskPromptRecoversAutoCompletedChild(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("synthetic report did not complete first wait")
 	}
-	collector.clearWait()
+	collector.clearWait(collector.waitOwner)
 
 	_, waitOnlyOutput, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 		SelfID:         parentID,
@@ -5481,7 +5481,7 @@ func TestChildReportCollector_GetPendingAndReported(t *testing.T) {
 
 	// Start a wait with 3 children
 	childIDs := []string{"child-a", "child-b", "child-c"}
-	collector.startWait("test-task", childIDs)
+	collector.startTestWait("test-task", childIDs)
 
 	// Report from only one child
 	if _, err := collector.addReport("child-b", "test-task", []byte(`{"status":"completed","summary":"test report"}`)); err != nil {
@@ -5521,13 +5521,13 @@ func TestChildReportCollector_IsWaiting(t *testing.T) {
 	}
 
 	// Start a wait
-	collector.startWait("test-task", []string{"child-1"})
+	collector.startTestWait("test-task", []string{"child-1"})
 	if !collector.isWaiting() {
 		t.Error("Expected isWaiting() to be true during active wait")
 	}
 
 	// Clear the wait
-	collector.clearWait()
+	collector.clearWait(collector.waitOwner)
 	if collector.isWaiting() {
 		t.Error("Expected isWaiting() to be false after clearWait")
 	}
@@ -5541,7 +5541,7 @@ func TestChildReportCollector_StaleTaskReport_DoesNotCompleteWait(t *testing.T) 
 		reports:         make(map[string]*childReport),
 	}
 
-	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	waitCh, alreadyDone := collector.startTestWait("T1", []string{"child-a"})
 	if alreadyDone {
 		t.Fatal("Expected wait to not be done immediately")
 	}
@@ -5601,7 +5601,7 @@ func TestChildReportCollector_MarkChildAutoCompleted_SurfacesStaleTaskReport(t *
 		reports:         make(map[string]*childReport),
 	}
 
-	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	waitCh, alreadyDone := collector.startTestWait("T1", []string{"child-a"})
 	if alreadyDone {
 		t.Fatal("Expected wait to not be done immediately")
 	}
@@ -5659,7 +5659,7 @@ func TestChildReportCollector_MarkChildFailed_OverwritesStaleTaskReport(t *testi
 		reports:         make(map[string]*childReport),
 	}
 
-	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	waitCh, alreadyDone := collector.startTestWait("T1", []string{"child-a"})
 	if alreadyDone {
 		t.Fatal("Expected wait to not be done immediately")
 	}
@@ -5702,7 +5702,7 @@ func TestChildReportCollector_MatchingTaskReport_CompletesWait(t *testing.T) {
 		reports:         make(map[string]*childReport),
 	}
 
-	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	waitCh, alreadyDone := collector.startTestWait("T1", []string{"child-a"})
 	if alreadyDone {
 		t.Fatal("Expected wait to not be done immediately")
 	}
@@ -5735,7 +5735,7 @@ func TestChildReportCollector_AutoCompleted_CountsTowardWait(t *testing.T) {
 		reports:         make(map[string]*childReport),
 	}
 
-	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	waitCh, alreadyDone := collector.startTestWait("T1", []string{"child-a"})
 	if alreadyDone {
 		t.Fatal("Expected wait to not be done immediately")
 	}
@@ -5765,7 +5765,7 @@ func TestChildReportCollector_Failed_CountsTowardWait(t *testing.T) {
 		reports:         make(map[string]*childReport),
 	}
 
-	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	waitCh, alreadyDone := collector.startTestWait("T1", []string{"child-a"})
 	if alreadyDone {
 		t.Fatal("Expected wait to not be done immediately")
 	}
@@ -5792,8 +5792,9 @@ func TestChildReportCollector_Failed_CountsTowardWait(t *testing.T) {
 	if r.FailMessage != "boom" {
 		t.Errorf("FailMessage = %q, want %q", r.FailMessage, "boom")
 	}
-	if !collector.reportSatisfiesCurrentTask(r) {
-		t.Error("reportSatisfiesCurrentTask should return true for a failed report")
+	p := collector.projectionLocked("child-a")
+	if !p.waitResolved() || p.taskSucceeded() || p.taskTerminal() {
+		t.Error("server failure must resolve the wait without task completion")
 	}
 
 	pending, reported := collector.getPendingAndReported()
@@ -5813,7 +5814,7 @@ func TestChildReportCollector_NoTaskID_AnyCompletedReportCounts(t *testing.T) {
 		reports:         make(map[string]*childReport),
 	}
 
-	waitCh, alreadyDone := collector.startWait("", []string{"child-a"})
+	waitCh, alreadyDone := collector.startTestWait("", []string{"child-a"})
 	if alreadyDone {
 		t.Fatal("Expected wait to not be done immediately")
 	}

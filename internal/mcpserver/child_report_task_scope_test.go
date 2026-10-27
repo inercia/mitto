@@ -68,8 +68,7 @@ func TestChildrenTasksWait_UnscopedReportDuringWaitCounts(t *testing.T) {
 	}
 }
 
-// A genuine report filed for a different task must never be overwritten by
-// auto-completion: it terminates the wait and is surfaced with a warning.
+// Only a real idle observation resolves the wait, not mismatched evidence alone.
 func TestChildReportCollector_TaskMismatchIsSurfacedNotAutoCompleted(t *testing.T) {
 	collector := &childReportCollector{
 		reports:       make(map[string]*childReport),
@@ -90,19 +89,18 @@ func TestChildReportCollector_TaskMismatchIsSurfacedNotAutoCompleted(t *testing.
 	if !r.TaskMismatch {
 		t.Error("expected the report to be flagged as a task mismatch")
 	}
-	if !collector.reportSatisfiesCurrentTask(r) {
-		t.Error("task-mismatch report must terminate the wait so the parent sees the evidence")
+	p := collector.projectionLocked("child")
+	if !p.waitResolved() || p.taskSucceeded() || p.taskTerminal() {
+		t.Error("idle diagnostic must resolve without completing the requested task")
 	}
 }
 
-// The 2026-10-26 failure: the child reported before the parent started waiting
-// with a new task_id. The unscoped report must survive the task change (it is
-// newer than the previous wait) instead of being cleared and lost.
+// Between-wait evidence survives as history, never as completion of a new task.
 func TestChildrenTasksWait_UnscopedReportBeforeNewTaskIsPreserved(t *testing.T) {
 	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
 	ctx := context.Background()
 
-	// Previous wait cycle ends, recording the freshness boundary.
+	// Previous wait ends without evidence.
 	_, first, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 		SelfID:         parentID,
 		ChildrenList:   childIDs,
@@ -129,22 +127,27 @@ func TestChildrenTasksWait_UnscopedReportBeforeNewTaskIsPreserved(t *testing.T) 
 		t.Fatalf("Report failed: %s", reportOutput.Error)
 	}
 
-	// New task: the unscoped report is fresh, so it must count.
+	// New task: unassociated evidence cannot count or suppress a corrective prompt.
 	_, second, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 		SelfID:         parentID,
 		ChildrenList:   childIDs,
 		TaskID:         "task-B",
+		Prompt:         "Work on B",
 		TimeoutSeconds: 1,
 	})
 	if err != nil {
 		t.Fatalf("second wait returned error: %v", err)
 	}
-	if second.TimedOut {
-		t.Fatal("fresh unscoped report was cleared by the task change")
+	if !second.TimedOut {
+		t.Fatal("between-wait unscoped evidence completed B")
 	}
 	report := second.Reports[childIDs[0]]
-	if !report.Completed || report.Report == nil || report.Report.Summary != "Reported between waits" {
+	if report.Completed || report.Report == nil || report.Report.Summary != "Reported between waits" {
 		t.Fatalf("expected the preserved report, got %+v", report)
+	}
+	msgs, err := srv.store.Queue(childIDs[0]).List()
+	if err != nil || len(msgs) != 1 || msgs[0].ClientID != parentID {
+		t.Fatalf("B correction not admitted: %+v %v", msgs, err)
 	}
 }
 
@@ -154,7 +157,7 @@ func TestChildrenTasksWait_StaleUnscopedReportDoesNotSatisfyNewTask(t *testing.T
 	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
 	ctx := context.Background()
 
-	// Report arrives unscoped and is consumed by the first wait.
+	// Report arrives before any active wait; it is never associated retroactively.
 	_, reportOutput, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
 		SelfID:  childIDs[0],
 		Status:  "completed",
@@ -176,8 +179,8 @@ func TestChildrenTasksWait_StaleUnscopedReportDoesNotSatisfyNewTask(t *testing.T
 	if err != nil {
 		t.Fatalf("first wait returned error: %v", err)
 	}
-	if first.TimedOut || !first.Reports[childIDs[0]].Completed {
-		t.Fatalf("expected the first wait to consume the unscoped report, got %+v", first.Reports[childIDs[0]])
+	if !first.TimedOut || first.Reports[childIDs[0]].Completed {
+		t.Fatalf("first named wait consumed unassociated evidence: %+v", first.Reports[childIDs[0]])
 	}
 
 	// New task: the report predates the previous wait's end, so it is stale.
