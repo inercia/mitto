@@ -17,6 +17,7 @@ import {
 } from "../lib.js";
 import {
   promptDialogParameters,
+  autofillBeadsIssueArgs,
   unmetRequiredParams,
 } from "../utils/prompts.js";
 import { getSdkClient } from "../utils/sdkClient.js";
@@ -172,6 +173,8 @@ export function LoopSettingsTab({
   hasBeadsWorkspace = false,
   isStreaming = false,
   minDelaySeconds = 5,
+  beadsIssue = "",
+  workingDir = "",
   onOpenPromptParamDialog,
   onConfigChange,
   onDirtyChange,
@@ -316,6 +319,17 @@ export function LoopSettingsTab({
     [selectedPrompt],
   );
 
+  // A bead-linked conversation already knows its issue, so seed the selected
+  // prompt's beadsId params from it. Explicit staged arguments win (including
+  // an intentionally cleared value) because they are spread last.
+  const effectiveArgs = useMemo(
+    () => ({
+      ...autofillBeadsIssueArgs(selectedPrompt, beadsIssue),
+      ...(draft?.arguments || {}),
+    }),
+    [selectedPrompt, beadsIssue, draft?.arguments],
+  );
+
   // Required parameters of the selected named prompt that are not yet filled by
   // the staged arguments. A loop prompt with required params may be picked from
   // the selector even before its arguments are set, but the loop must not be
@@ -324,8 +338,8 @@ export function LoopSettingsTab({
   // in "named" prompt mode; free-text loops have no declared parameters.
   const unmetRequired = useMemo(() => {
     if (!draft || draft.promptMode !== "named" || !selectedPrompt) return [];
-    return unmetRequiredParams(selectedPrompt, draft.arguments);
-  }, [draft?.promptMode, selectedPrompt, draft?.arguments]);
+    return unmetRequiredParams(selectedPrompt, effectiveArgs);
+  }, [draft?.promptMode, selectedPrompt, effectiveArgs]);
   const hasUnmetRequired = unmetRequired.length > 0;
 
   const openArguments = useCallback(() => {
@@ -342,13 +356,18 @@ export function LoopSettingsTab({
       (argumentsMap) => {
         stage((current) => ({ ...current, arguments: { ...argumentsMap } }));
       },
-      { initialValues: draft.arguments, hostSessionId: sessionId },
+      {
+        initialValues: effectiveArgs,
+        workingDir,
+        hostSessionId: sessionId,
+      },
     );
   }, [
     selectedPrompt,
     selectedPromptParams,
     onOpenPromptParamDialog,
-    draft?.arguments,
+    effectiveArgs,
+    workingDir,
     sessionId,
     stage,
   ]);

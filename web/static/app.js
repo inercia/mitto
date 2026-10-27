@@ -230,6 +230,7 @@ import {
   shouldOpenPromptDialog,
   promptDialogParameters,
   autofillConversationMenuArgs,
+  autofillBeadsIssueArgs,
   fetchCachedParamNames,
   promptResolveAsLoop,
 } from "./utils/prompts.js";
@@ -259,8 +260,12 @@ import { Tooltip } from "./components/Tooltip.js";
 // =============================================================================
 
 function isNewConversationHereChord(event) {
-  return event.code === "KeyN" && event.altKey &&
-    (event.metaKey !== event.ctrlKey) && !event.shiftKey;
+  return (
+    event.code === "KeyN" &&
+    event.altKey &&
+    event.metaKey !== event.ctrlKey &&
+    !event.shiftKey
+  );
 }
 
 function App() {
@@ -927,44 +932,51 @@ function App() {
   // Note: isLoadingMore state is managed by useWebSocket hook, not locally.
   // The hook sets isLoadingMore=true when sending load_events request,
   // and clears it when events_loaded response is received.
-  const requestHistoryBatch = useCallback((sessionId) => {
-    if (!sessionId) return;
+  const requestHistoryBatch = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
 
-    // Save scroll metrics BEFORE loading for scroll position preservation
-    // When new messages are prepended, we'll restore the position relative to existing content
-    const container = messagesContainerRef.current;
-    if (container) {
-      const panelRect = container.getBoundingClientRect();
-      const anchor = Array.from(container.querySelectorAll(".mitto-msg-row")).find((row) => {
-        const rect = row.getBoundingClientRect();
-        return rect.bottom > panelRect.top && rect.top < panelRect.bottom;
-      });
-      scrollPreservationRef.current = {
-        scrollHeight: container.scrollHeight,
-        scrollTop: container.scrollTop,
-        historyKey: anchor?.dataset.historyKey,
-        anchorOffset: anchor ? anchor.getBoundingClientRect().top - panelRect.top : null,
-        overflowAnchor: container.style.overflowAnchor,
-      };
-      container.style.overflowAnchor = "none";
-      console.log(
-        "[Scroll] Saved scroll metrics before load more:",
-        scrollPreservationRef.current,
-      );
-    }
+      // Save scroll metrics BEFORE loading for scroll position preservation
+      // When new messages are prepended, we'll restore the position relative to existing content
+      const container = messagesContainerRef.current;
+      if (container) {
+        const panelRect = container.getBoundingClientRect();
+        const anchor = Array.from(
+          container.querySelectorAll(".mitto-msg-row"),
+        ).find((row) => {
+          const rect = row.getBoundingClientRect();
+          return rect.bottom > panelRect.top && rect.top < panelRect.bottom;
+        });
+        scrollPreservationRef.current = {
+          scrollHeight: container.scrollHeight,
+          scrollTop: container.scrollTop,
+          historyKey: anchor?.dataset.historyKey,
+          anchorOffset: anchor
+            ? anchor.getBoundingClientRect().top - panelRect.top
+            : null,
+          overflowAnchor: container.style.overflowAnchor,
+        };
+        container.style.overflowAnchor = "none";
+        console.log(
+          "[Scroll] Saved scroll metrics before load more:",
+          scrollPreservationRef.current,
+        );
+      }
 
-    loadMoreMessages(sessionId);
-  }, [loadMoreMessages]);
+      loadMoreMessages(sessionId);
+    },
+    [loadMoreMessages],
+  );
 
   const handleLoadMore = useCallback(() => {
     if (isLoadingMore || !activeSessionId || !hasMoreMessages) return;
     const metrics = latestHistoryMetricsRef.current;
-    const viewportHeight = metrics?.sessionId === activeSessionId
-      ? metrics.viewportHeight
-      : messagesContainerRef.current?.clientHeight || 0;
-    const contentHeight = metrics?.sessionId === activeSessionId
-      ? metrics.contentHeight
-      : 0;
+    const viewportHeight =
+      metrics?.sessionId === activeSessionId
+        ? metrics.viewportHeight
+        : messagesContainerRef.current?.clientHeight || 0;
+    const contentHeight =
+      metrics?.sessionId === activeSessionId ? metrics.contentHeight : 0;
     historyFillRef.current = {
       sessionId: activeSessionId,
       targetHeight: contentHeight + viewportHeight * 2,
@@ -978,56 +990,62 @@ function App() {
     requestHistoryBatch(activeSessionId);
   }, [isLoadingMore, activeSessionId, hasMoreMessages, requestHistoryBatch]);
 
-  const handleHistoryContentMeasured = useCallback((metrics) => {
-    latestHistoryMetricsRef.current = metrics;
-    if (!metrics.sessionId || !metrics.viewportHeight) return;
-    if (!hasMoreMessages) {
-      historyFillRef.current = null;
-      return;
-    }
-    let operation = historyFillRef.current;
-    if (operation && operation.sessionId !== metrics.sessionId) {
-      historyFillRef.current = null;
-      operation = null;
-    }
-    if (!operation) {
-      operation = {
-        sessionId: metrics.sessionId,
-        targetHeight: metrics.viewportHeight * 2,
-        startedAt: Date.now(),
-        requests: 0,
-        rawEvents: 0,
-        responseBytes: 0,
-        lastBatchResult: null,
-        pending: false,
-      };
-      historyFillRef.current = operation;
-    }
-    if (isLoadingMore) {
+  const handleHistoryContentMeasured = useCallback(
+    (metrics) => {
+      latestHistoryMetricsRef.current = metrics;
+      if (!metrics.sessionId || !metrics.viewportHeight) return;
+      if (!hasMoreMessages) {
+        historyFillRef.current = null;
+        return;
+      }
+      let operation = historyFillRef.current;
+      if (operation && operation.sessionId !== metrics.sessionId) {
+        historyFillRef.current = null;
+        operation = null;
+      }
+      if (!operation) {
+        operation = {
+          sessionId: metrics.sessionId,
+          targetHeight: metrics.viewportHeight * 2,
+          startedAt: Date.now(),
+          requests: 0,
+          rawEvents: 0,
+          responseBytes: 0,
+          lastBatchResult: null,
+          pending: false,
+        };
+        historyFillRef.current = operation;
+      }
+      if (isLoadingMore) {
+        operation.pending = true;
+        return;
+      }
+      if (operation.pending) operation.pending = false;
+      else if (operation.requests > 0) return;
+      if (
+        historyBatchResult?.prepend &&
+        operation.lastBatchResult !== historyBatchResult
+      ) {
+        operation.lastBatchResult = historyBatchResult;
+        operation.rawEvents += historyBatchResult.rawEventCount || 0;
+        operation.responseBytes += historyBatchResult.responseBytes || 0;
+      }
+      if (
+        metrics.contentHeight >= operation.targetHeight ||
+        operation.requests >= 20 ||
+        operation.rawEvents >= 5000 ||
+        operation.responseBytes >= 4 * 1024 * 1024 ||
+        Date.now() - operation.startedAt >= 10000
+      ) {
+        historyFillRef.current = null;
+        return;
+      }
+      operation.requests += 1;
       operation.pending = true;
-      return;
-    }
-    if (operation.pending) operation.pending = false;
-    else if (operation.requests > 0) return;
-    if (historyBatchResult?.prepend && operation.lastBatchResult !== historyBatchResult) {
-      operation.lastBatchResult = historyBatchResult;
-      operation.rawEvents += historyBatchResult.rawEventCount || 0;
-      operation.responseBytes += historyBatchResult.responseBytes || 0;
-    }
-    if (
-      metrics.contentHeight >= operation.targetHeight ||
-      operation.requests >= 20 ||
-      operation.rawEvents >= 5000 ||
-      operation.responseBytes >= 4 * 1024 * 1024 ||
-      Date.now() - operation.startedAt >= 10000
-    ) {
-      historyFillRef.current = null;
-      return;
-    }
-    operation.requests += 1;
-    operation.pending = true;
-    requestHistoryBatch(metrics.sessionId);
-  }, [hasMoreMessages, isLoadingMore, historyBatchResult, requestHistoryBatch]);
+      requestHistoryBatch(metrics.sessionId);
+    },
+    [hasMoreMessages, isLoadingMore, historyBatchResult, requestHistoryBatch],
+  );
 
   // Infinite scroll for loading earlier messages
   // Uses IntersectionObserver to detect when user scrolls near the top
@@ -1072,7 +1090,9 @@ function App() {
       // Option may change e.key (e.g. ñ); match the physical N key instead.
       if (
         isNewConversationHereChord(e) &&
-        !e.repeat && !e.isComposing && !e.defaultPrevented
+        !e.repeat &&
+        !e.isComposing &&
+        !e.defaultPrevented
       ) {
         e.preventDefault();
         window.mittoNewConversationHere?.();
@@ -1234,8 +1254,11 @@ function App() {
       .then((config) => {
         // Load global model profiles (config.models) for PromptsMenu chips.
         setModelProfiles(Array.isArray(config?.models) ? config.models : []);
-        setModelShortcuts(Array.isArray(config?.model_shortcuts)
-          ? config.model_shortcuts.map((entry) => ({ ...entry })) : []);
+        setModelShortcuts(
+          Array.isArray(config?.model_shortcuts)
+            ? config.model_shortcuts.map((entry) => ({ ...entry }))
+            : [],
+        );
         // Track if config is read-only (loaded from --config file or RC file)
         if (config?.config_readonly) {
           setConfigReadonly(true);
@@ -1458,14 +1481,19 @@ function App() {
   const newConversationHereBusyRef = useRef(false);
   const conversationLocationRef = useRef(null);
   conversationLocationRef.current = JSON.stringify([
-    mainView, activeSessionId, mainView === "beads" ? beadsWorkingDir : null,
+    mainView,
+    activeSessionId,
+    mainView === "beads" ? beadsWorkingDir : null,
   ]);
 
   useEffect(() => {
     if (!isCreatingSession) {
       newConversationHereBusyRef.current = false;
       // Includes terminal errors from a later automatic retry.
-      if (newConversationHereRef.current && !newConversationHereRef.current.sessionId) {
+      if (
+        newConversationHereRef.current &&
+        !newConversationHereRef.current.sessionId
+      ) {
         newConversationHereRef.current = null;
       }
     }
@@ -1473,8 +1501,11 @@ function App() {
 
   useEffect(() => {
     const request = newConversationHereRef.current;
-    if (request && !request.sessionId &&
-        conversationLocationRef.current !== request.originKey) {
+    if (
+      request &&
+      !request.sessionId &&
+      conversationLocationRef.current !== request.originKey
+    ) {
       request.canceled = true;
     }
   }, [mainView, activeSessionId, beadsWorkingDir]);
@@ -1485,12 +1516,18 @@ function App() {
     const cancelFocus = (event) => {
       const request = newConversationHereRef.current;
       if (!request) return;
-      if (event.type === "keydown" &&
-          (isNewConversationHereChord(event) ||
-           ["Control", "Meta", "Alt", "Shift"].includes(event.key))) return;
-      if (event.type === "focusin" &&
-          (event.target === request.originElement ||
-           event.target?.matches?.(".chat-input-textarea"))) return;
+      if (
+        event.type === "keydown" &&
+        (isNewConversationHereChord(event) ||
+          ["Control", "Meta", "Alt", "Shift"].includes(event.key))
+      )
+        return;
+      if (
+        event.type === "focusin" &&
+        (event.target === request.originElement ||
+          event.target?.matches?.(".chat-input-textarea"))
+      )
+        return;
       request.focusCanceled = true;
     };
     document.addEventListener("pointerdown", cancelFocus);
@@ -1954,12 +1991,19 @@ function App() {
 
   const handleNewConversationHere = useCallback(async () => {
     if (
-      configReadonly || isCreatingSession || newConversationHereBusyRef.current ||
-      isModalDialogOpen() || quickCreate.open || settingsDialog.isOpen ||
-      workspaceDialog.isOpen || workspacesDialog.isOpen
-    ) return;
+      configReadonly ||
+      isCreatingSession ||
+      newConversationHereBusyRef.current ||
+      isModalDialogOpen() ||
+      quickCreate.open ||
+      settingsDialog.isOpen ||
+      workspaceDialog.isOpen ||
+      workspacesDialog.isOpen
+    )
+      return;
 
-    const workingDir = sessionInfo?.working_dir ||
+    const workingDir =
+      sessionInfo?.working_dir ||
       (mainView === "beads" ? beadsWorkingDir : null) ||
       (workspaces.length === 1 ? workspaces[0].working_dir : null);
     if (!workingDir) {
@@ -1978,13 +2022,17 @@ function App() {
     newConversationHereRef.current = request;
     const result = await newSession({
       workingDir,
-      shouldActivate: () => !request.canceled &&
+      shouldActivate: () =>
+        !request.canceled &&
         conversationLocationRef.current === request.originKey,
       onCreated: (sessionId) => {
         request.sessionId = sessionId;
-        if (request.canceled ||
-            conversationLocationRef.current !== request.originKey) {
-          if (newConversationHereRef.current === request) newConversationHereRef.current = null;
+        if (
+          request.canceled ||
+          conversationLocationRef.current !== request.originKey
+        ) {
+          if (newConversationHereRef.current === request)
+            newConversationHereRef.current = null;
           return;
         }
         setMainView("conversation");
@@ -2013,14 +2061,26 @@ function App() {
       setSettingsDialog({ isOpen: true, forceOpen: true });
     }
   }, [
-    configReadonly, isCreatingSession, quickCreate.open, settingsDialog.isOpen,
-    workspaceDialog.isOpen, workspacesDialog.isOpen, sessionInfo?.working_dir,
-    mainView, beadsWorkingDir, workspaces, handleNewSession, newSession, showToast,
+    configReadonly,
+    isCreatingSession,
+    quickCreate.open,
+    settingsDialog.isOpen,
+    workspaceDialog.isOpen,
+    workspacesDialog.isOpen,
+    sessionInfo?.working_dir,
+    mainView,
+    beadsWorkingDir,
+    workspaces,
+    handleNewSession,
+    newSession,
+    showToast,
   ]);
 
   useEffect(() => {
     window.mittoNewConversationHere = handleNewConversationHere;
-    return () => { delete window.mittoNewConversationHere; };
+    return () => {
+      delete window.mittoNewConversationHere;
+    };
   }, [handleNewConversationHere]);
 
   const handleWorkspaceSelect = async (workspace) => {
@@ -2615,6 +2675,18 @@ function App() {
       // The menu can target any conversation, not just the active one, so the
       // parameter dialog is scoped to that conversation's folder.
       const targetWorkingDir = session?.working_dir || undefined;
+      // A bead-linked conversation already knows its issue. Seed every prompt's
+      // beadsId params from it so loop/work prompts do not ask again; explicit
+      // dialog values still win (spread after).
+      const linkedBeadArgs = autofillBeadsIssueArgs(
+        prompt,
+        session?.beads_issue,
+      );
+      const linkedBeadNames = new Set(Object.keys(linkedBeadArgs));
+      const mergeLinkedBeadArgs = (userArgs) => ({
+        ...linkedBeadArgs,
+        ...(userArgs || {}),
+      });
       const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
       if (asLoop) {
         const action = decideLoopAction(session);
@@ -2629,16 +2701,22 @@ function App() {
             prompt,
             "conversation",
             cached,
+            linkedBeadNames,
           );
           if (shouldOpen) {
             setPromptParamDialog({
               prompt,
-              parameters: promptDialogParameters(prompt, "conversation"),
+              parameters: promptDialogParameters(
+                prompt,
+                "conversation",
+                linkedBeadNames,
+              ),
               hostSessionId: sessionId,
               workingDir: targetWorkingDir,
+              initialValues: linkedBeadArgs,
               onSubmit: async (userArgs) => {
                 const result = await makeLoopNow(sessionId, prompt, {
-                  arguments: userArgs,
+                  arguments: mergeLinkedBeadArgs(userArgs),
                 });
                 if (result.success) {
                   showToast({
@@ -2657,7 +2735,13 @@ function App() {
             });
             return;
           }
-          const result = await makeLoopNow(sessionId, prompt);
+          const result = await makeLoopNow(
+            sessionId,
+            prompt,
+            Object.keys(linkedBeadArgs).length > 0
+              ? { arguments: linkedBeadArgs }
+              : undefined,
+          );
           if (result.success) {
             showToast({
               style: "success",
@@ -2683,18 +2767,24 @@ function App() {
             prompt,
             "conversation",
             cached,
+            linkedBeadNames,
           );
           if (shouldOpen) {
             setPromptParamDialog({
               prompt,
-              parameters: promptDialogParameters(prompt, "conversation"),
+              parameters: promptDialogParameters(
+                prompt,
+                "conversation",
+                linkedBeadNames,
+              ),
               hostSessionId: sessionId,
               workingDir: targetWorkingDir,
+              initialValues: linkedBeadArgs,
               onSubmit: async (userArgs) => {
                 const result = await seedConversationWithPrompt(
                   sessionId,
                   prompt,
-                  { arguments: userArgs },
+                  { arguments: mergeLinkedBeadArgs(userArgs) },
                 );
                 if (result.success) {
                   showToast({
@@ -2713,7 +2803,13 @@ function App() {
             });
             return;
           }
-          const result = await seedConversationWithPrompt(sessionId, prompt);
+          const result = await seedConversationWithPrompt(
+            sessionId,
+            prompt,
+            Object.keys(linkedBeadArgs).length > 0
+              ? { arguments: linkedBeadArgs }
+              : undefined,
+          );
           if (result.success) {
             showToast({
               style: "success",
@@ -2765,16 +2861,31 @@ function App() {
             },
           });
         };
-        if (shouldOpenPromptDialog(prompt, "conversation")) {
+        if (
+          shouldOpenPromptDialog(
+            prompt,
+            "conversation",
+            undefined,
+            linkedBeadNames,
+          )
+        ) {
           setPromptParamDialog({
             prompt,
-            parameters: promptDialogParameters(prompt, "conversation"),
+            parameters: promptDialogParameters(
+              prompt,
+              "conversation",
+              linkedBeadNames,
+            ),
             workingDir: targetWorkingDir,
-            onSubmit: (userArgs) => openScheduleDialog(userArgs),
+            initialValues: linkedBeadArgs,
+            onSubmit: (userArgs) =>
+              openScheduleDialog(mergeLinkedBeadArgs(userArgs)),
           });
           return;
         }
-        openScheduleDialog(undefined);
+        openScheduleDialog(
+          Object.keys(linkedBeadArgs).length > 0 ? linkedBeadArgs : undefined,
+        );
         return;
       }
 
@@ -2783,11 +2894,14 @@ function App() {
       if (!sessionId) return;
       // Auto-fill what the host conversation can supply (e.g. a lone child for a
       // childSessionId param), then prompt the user only for what remains.
-      const autoArgs = autofillConversationMenuArgs(
-        prompt,
-        sessionId,
-        allSessionsRef.current,
-      );
+      const autoArgs = {
+        ...linkedBeadArgs,
+        ...autofillConversationMenuArgs(
+          prompt,
+          sessionId,
+          allSessionsRef.current,
+        ),
+      };
       const knownNames = new Set(
         Object.keys(autoArgs).filter((k) => autoArgs[k] !== undefined),
       );
@@ -3888,8 +4002,11 @@ function App() {
                 setModelProfiles(
                   Array.isArray(config?.models) ? config.models : [],
                 );
-                setModelShortcuts(Array.isArray(config?.model_shortcuts)
-                  ? config.model_shortcuts.map((entry) => ({ ...entry })) : []);
+                setModelShortcuts(
+                  Array.isArray(config?.model_shortcuts)
+                    ? config.model_shortcuts.map((entry) => ({ ...entry }))
+                    : [],
+                );
                 // Reload UI settings
                 setDeleteConfirmMode(
                   config?.ui?.confirmations?.delete_conversation || "always",

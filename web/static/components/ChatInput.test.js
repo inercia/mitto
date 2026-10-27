@@ -25,39 +25,70 @@ import { fileURLToPath } from "node:url";
 
 test("actual ChatInput prompt navigation preserves keyboard versus mouse loop paths", async () => {
   if (process.env.MITTO_CHAT_PROMPT_TEST_CHILD !== "1") {
-    const result = spawnSync(process.execPath, ["test", fileURLToPath(import.meta.url)], {
-      encoding: "utf8",
-      env: { ...process.env, MITTO_CHAT_PROMPT_TEST_CHILD: "1" },
-      timeout: 30_000,
-    });
-    if (result.status !== 0) throw new Error(`Isolated ChatInput tests failed:\n${result.stdout}\n${result.stderr}`);
+    const result = spawnSync(
+      process.execPath,
+      ["test", fileURLToPath(import.meta.url)],
+      {
+        encoding: "utf8",
+        env: { ...process.env, MITTO_CHAT_PROMPT_TEST_CHILD: "1" },
+        timeout: 30_000,
+      },
+    );
+    if (result.status !== 0)
+      throw new Error(
+        `Isolated ChatInput tests failed:\n${result.stdout}\n${result.stderr}`,
+      );
     return;
   }
   const preact = await import("../vendor/preact.js");
   const hooks = await import("../vendor/preact-hooks.js");
   const { default: htm } = await import("../vendor/htm.js");
   const previous = window.preact;
-  window.preact = { ...preact, ...hooks, html: htm.bind(preact.h), memo: (component) => component };
+  window.preact = {
+    ...preact,
+    ...hooks,
+    html: htm.bind(preact.h),
+    memo: (component) => component,
+  };
   const { ChatInput } = await import("./ChatInput.js");
   const container = document.createElement("div");
   document.body.appendChild(container);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
   const loopCalls = [];
   const sendCalls = [];
-  const prompt = { name: "Optional", prompt: "Inserted text", loop: { mode: "optional", default: false } };
+  const prompt = {
+    name: "Optional",
+    prompt: "Inserted text",
+    loop: { mode: "optional", default: false },
+  };
   const open = async () => {
     container.querySelector('[aria-label="Insert predefined prompt"]').click();
     await settle();
-    return container.querySelector(".chat-input-prompts-dropup input[type=text]");
+    return container.querySelector(
+      ".chat-input-prompts-dropup input[type=text]",
+    );
   };
   const key = async (input, value, shiftKey = false) => {
-    const event = new KeyboardEvent("keydown", { key: value, shiftKey, bubbles: true, cancelable: true });
+    const event = new KeyboardEvent("keydown", {
+      key: value,
+      shiftKey,
+      bubbles: true,
+      cancelable: true,
+    });
     input.dispatchEvent(event);
     await settle();
     return event;
   };
   try {
-    preact.render(preact.h(ChatInput, { sessionId: "mounted-prompt-test", predefinedPrompts: [prompt], onSend: (...args) => sendCalls.push(args), onLoopPrompt: (...args) => loopCalls.push(args) }), container);
+    preact.render(
+      preact.h(ChatInput, {
+        sessionId: "mounted-prompt-test",
+        predefinedPrompts: [prompt],
+        onSend: (...args) => sendCalls.push(args),
+        onLoopPrompt: (...args) => loopCalls.push(args),
+      }),
+      container,
+    );
     let input = await open();
     expect(document.activeElement).toBe(input);
     await key(input, "Enter");
@@ -96,30 +127,44 @@ test("actual ChatInput prompt navigation preserves keyboard versus mouse loop pa
 
 test("actual ChatInput Ctrl+M toggles the model picker and leaves Cmd+M native", async () => {
   if (process.env.MITTO_CHAT_PROMPT_TEST_CHILD !== "1") {
-    const result = spawnSync(process.execPath, ["test", fileURLToPath(import.meta.url)], {
-      encoding: "utf8",
-      env: { ...process.env, MITTO_CHAT_PROMPT_TEST_CHILD: "1" },
-      timeout: 30_000,
-    });
-    if (result.status !== 0) throw new Error(`Isolated ChatInput tests failed:\n${result.stdout}\n${result.stderr}`);
+    const result = spawnSync(
+      process.execPath,
+      ["test", fileURLToPath(import.meta.url)],
+      {
+        encoding: "utf8",
+        env: { ...process.env, MITTO_CHAT_PROMPT_TEST_CHILD: "1" },
+        timeout: 30_000,
+      },
+    );
+    if (result.status !== 0)
+      throw new Error(
+        `Isolated ChatInput tests failed:\n${result.stdout}\n${result.stderr}`,
+      );
     return;
   }
   const preact = await import("../vendor/preact.js");
   const hooks = await import("../vendor/preact-hooks.js");
   const { default: htm } = await import("../vendor/htm.js");
   const previous = window.preact;
-  window.preact = { ...preact, ...hooks, html: htm.bind(preact.h), memo: (component) => component };
+  window.preact = {
+    ...preact,
+    ...hooks,
+    html: htm.bind(preact.h),
+    memo: (component) => component,
+  };
   const { ChatInput } = await import("./ChatInput.js");
-  const {
-    setConfigOptions,
-    _resetConfigOptionsStoreForTests,
-  } = await import("../stores/configOptionsStore.js");
+  const { setConfigOptions, _resetConfigOptionsStoreForTests } =
+    await import("../stores/configOptionsStore.js");
   const { isModalDialogOpen } = await import("../utils/globalHandlers.js");
 
   const container = document.createElement("div");
   document.body.appendChild(container);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
-  const prompt = { name: "Optional", prompt: "Inserted text", loop: { mode: "optional", default: false } };
+  const prompt = {
+    name: "Optional",
+    prompt: "Inserted text",
+    loop: { mode: "optional", default: false },
+  };
   const chatInputRef = { current: null };
 
   // The app.js global keydown handler needs the full app wiring, so its
@@ -131,7 +176,8 @@ test("actual ChatInput Ctrl+M toggles the model picker and leaves Cmd+M native",
       const key = e.key;
       if (key === "/") {
         e.preventDefault();
-        if (chatInputRef.current?.togglePrompts) chatInputRef.current.togglePrompts();
+        if (chatInputRef.current?.togglePrompts)
+          chatInputRef.current.togglePrompts();
       }
       if (e.ctrlKey && !e.metaKey && (key === "m" || key === "M")) {
         if (!isModalDialogOpen() && chatInputRef.current?.toggleModels?.()) {
@@ -147,7 +193,11 @@ test("actual ChatInput Ctrl+M toggles the model picker and leaves Cmd+M native",
   // user pressing the chord.
   const press = async (init) => {
     const target = document.activeElement || document.body;
-    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ...init,
+    });
     target.dispatchEvent(event);
     await settle();
     return event;
@@ -155,20 +205,45 @@ test("actual ChatInput Ctrl+M toggles the model picker and leaves Cmd+M native",
 
   try {
     setConfigOptions("ctrl-m-test", [
-      { id: "mode", name: "Mode", category: "mode", type: "select", current_value: "default", options: [{ value: "default", name: "Default" }] },
-      { id: "model", name: "Model", category: "model", type: "select", current_value: "a", options: [{ value: "a", name: "Model A" }, { value: "b", name: "Model B" }] },
+      {
+        id: "mode",
+        name: "Mode",
+        category: "mode",
+        type: "select",
+        current_value: "default",
+        options: [{ value: "default", name: "Default" }],
+      },
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        current_value: "a",
+        options: [
+          { value: "a", name: "Model A" },
+          { value: "b", name: "Model B" },
+        ],
+      },
     ]);
-    preact.render(preact.h(ChatInput, {
-      sessionId: "ctrl-m-test",
-      predefinedPrompts: [prompt],
-      onSend: () => {},
-      onLoopPrompt: () => {},
-      inputRef: chatInputRef,
-    }), container);
+    preact.render(
+      preact.h(ChatInput, {
+        sessionId: "ctrl-m-test",
+        predefinedPrompts: [prompt],
+        onSend: () => {},
+        onLoopPrompt: () => {},
+        inputRef: chatInputRef,
+      }),
+      container,
+    );
 
-    const modelDetails = () => container.querySelector('[data-testid="config-option-model-filter"]')?.closest("details");
-    const modelFilter = () => container.querySelector('[data-testid="config-option-model-filter"]');
-    const promptsPanel = () => container.querySelector(".chat-input-prompts-dropup");
+    const modelDetails = () =>
+      container
+        .querySelector('[data-testid="config-option-model-filter"]')
+        ?.closest("details");
+    const modelFilter = () =>
+      container.querySelector('[data-testid="config-option-model-filter"]');
+    const promptsPanel = () =>
+      container.querySelector(".chat-input-prompts-dropup");
     const textarea = () => container.querySelector("textarea");
 
     textarea().focus();
@@ -197,7 +272,9 @@ test("actual ChatInput Ctrl+M toggles the model picker and leaves Cmd+M native",
     chatInputRef.current.togglePrompts();
     await settle();
     expect(promptsPanel()).not.toBeNull();
-    expect(document.activeElement).toBe(promptsPanel().querySelector('input[type="text"]'));
+    expect(document.activeElement).toBe(
+      promptsPanel().querySelector('input[type="text"]'),
+    );
 
     const switchEvent = await press({ key: "m", ctrlKey: true });
     expect(switchEvent.defaultPrevented).toBe(true);
@@ -236,7 +313,11 @@ test("actual ChatInput Ctrl+M toggles the model picker and leaves Cmd+M native",
     // Enter selects and closes (restoring focus to the trigger); the Ctrl+M
     // is dispatched before Preact flushes the passive effects of that close.
     modelFilter().dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
     );
     const raceEvent = new KeyboardEvent("keydown", {
       key: "m",
@@ -1680,40 +1761,102 @@ describe("ChatInput composer draft isolation + autosize consolidation (mitto-sus
       const sent = [];
       const queued = [];
       const bindings = {
-        ...helpers, sessionId: "A", modelShortcuts: [{ number: 2, model_tag: " Custom  Tag " }],
-        onApplyModelTag: (...args) => { sent.push(args); return Promise.resolve({ status: "applied" }); },
-        onSetConfigOption: () => { throw new Error("shortcut must not set a model ID"); },
+        ...helpers,
+        sessionId: "A",
+        modelShortcuts: [{ number: 2, model_tag: " Custom  Tag " }],
+        onApplyModelTag: (...args) => {
+          sent.push(args);
+          return Promise.resolve({ status: "applied" });
+        },
+        onSetConfigOption: () => {
+          throw new Error("shortcut must not set a model ID");
+        },
         onShowToast: (toast) => toasts.push(toast),
         modelShortcutLifetimeRef: ref,
-        showSlashPicker: false, filteredSlashCommands: [], slashSelectedIndex: 0,
-        setSlashSelectedIndex() {}, setShowSlashPicker() {}, handleSlashCommandSelect() {},
-        sendKeyMode: "enter", handleSubmit: () => sent.push("prompt"),
+        showSlashPicker: false,
+        filteredSlashCommands: [],
+        slashSelectedIndex: 0,
+        setSlashSelectedIndex() {},
+        setShowSlashPicker() {},
+        handleSlashCommandSelect() {},
+        sendKeyMode: "enter",
+        handleSubmit: () => sent.push("prompt"),
         handleAddToQueueClick: () => queued.push("queue"),
         ...overrides,
       };
       const lifetimeStart = source.indexOf("  // Each session visit");
-      const lifetimeEnd = source.indexOf("  // Dev-only render-count", lifetimeStart);
-      const setupLifetime = new Function("sessionId", "useRef", "useEffect", source.slice(lifetimeStart, lifetimeEnd));
+      const lifetimeEnd = source.indexOf(
+        "  // Dev-only render-count",
+        lifetimeStart,
+      );
+      const setupLifetime = new Function(
+        "sessionId",
+        "useRef",
+        "useEffect",
+        source.slice(lifetimeStart, lifetimeEnd),
+      );
       function render(sessionId = bindings.sessionId) {
         bindings.sessionId = sessionId;
-        setupLifetime(sessionId, (value) => { if (!ref.current) ref.current = value; return ref; }, (setup) => {
-          if (lastSession !== sessionId) { cleanup?.(); setupEffect = setup; cleanup = setup(); lastSession = sessionId; }
-        });
+        setupLifetime(
+          sessionId,
+          (value) => {
+            if (!ref.current) ref.current = value;
+            return ref;
+          },
+          (setup) => {
+            if (lastSession !== sessionId) {
+              cleanup?.();
+              setupEffect = setup;
+              cleanup = setup();
+              lastSession = sessionId;
+            }
+          },
+        );
         const start = source.indexOf("const handleKeyDown = (e) => {");
         const end = source.indexOf("\n  };", start);
-        return new Function(...Object.keys(bindings), `${source.slice(start, end + 5)}; return handleKeyDown;`)(...Object.values(bindings));
+        return new Function(
+          ...Object.keys(bindings),
+          `${source.slice(start, end + 5)}; return handleKeyDown;`,
+        )(...Object.values(bindings));
       }
-      return { render, toasts, sent, queued, unmount: () => cleanup?.(), replay: () => { cleanup?.(); cleanup = setupEffect(); } };
+      return {
+        render,
+        toasts,
+        sent,
+        queued,
+        unmount: () => cleanup?.(),
+        replay: () => {
+          cleanup?.();
+          cleanup = setupEffect();
+        },
+      };
     }
     function event(overrides = {}) {
-      return { code: "Digit2", key: "@", metaKey: true, shiftKey: true, preventDefault: jest.fn(), ...overrides };
+      return {
+        code: "Digit2",
+        key: "@",
+        metaKey: true,
+        shiftKey: true,
+        preventDefault: jest.fn(),
+        ...overrides,
+      };
     }
-    const flushFeedback = async () => { await Promise.resolve(); await Promise.resolve(); };
+    const flushFeedback = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    };
 
     test("configured press sends a tag exactly once and waits for confirmation", async () => {
       let resolve;
       const calls = [];
-      const h = harness({ onApplyModelTag: (...args) => { calls.push(args); return new Promise((done) => { resolve = done; }); } });
+      const h = harness({
+        onApplyModelTag: (...args) => {
+          calls.push(args);
+          return new Promise((done) => {
+            resolve = done;
+          });
+        },
+      });
       const e = event();
       h.render()(e);
       expect(e.preventDefault).toHaveBeenCalledTimes(1);
@@ -1728,31 +1871,63 @@ describe("ChatInput composer draft isolation + autosize consolidation (mitto-sus
     });
 
     test("unassigned, missing session and callback are consumed without a send", () => {
-      for (const overrides of [{ modelShortcuts: [] }, { sessionId: null }, { onApplyModelTag: undefined }]) {
+      for (const overrides of [
+        { modelShortcuts: [] },
+        { sessionId: null },
+        { onApplyModelTag: undefined },
+      ]) {
         const h = harness(overrides);
-        const e = event(); h.render()(e);
+        const e = event();
+        h.render()(e);
         expect(e.preventDefault).toHaveBeenCalledTimes(1);
         expect(h.sent).toEqual([]);
         expect(h.toasts.length).toBe(1);
         expect(h.toasts[0].title).toBeTruthy();
       }
-      const h = harness({ modelShortcuts: [] }); h.render()(event());
+      const h = harness({ modelShortcuts: [] });
+      h.render()(event());
       expect(h.toasts[0].message).toContain("Settings > Keyboard");
     });
 
-    for (const status of ["already_active", "no_match", "catalog_unavailable", "invalid_tag", "invalid_request",
-      "missing_session", "invalid_target", "internal_error", "protocol_error", "send_failed", "timeout", "cancelled"]) {
+    for (const status of [
+      "already_active",
+      "no_match",
+      "catalog_unavailable",
+      "invalid_tag",
+      "invalid_request",
+      "missing_session",
+      "invalid_target",
+      "internal_error",
+      "protocol_error",
+      "send_failed",
+      "timeout",
+      "cancelled",
+    ]) {
       test(`actual handler uses safe feedback for ${status}`, async () => {
-        const h = harness({ onApplyModelTag: () => Promise.resolve({ status, message: "SECRET" }) });
-        h.render()(event()); await flushFeedback();
-        const expected = helpers.modelShortcutToast({ status }, "Custom  Tag", 2);
+        const h = harness({
+          onApplyModelTag: () => Promise.resolve({ status, message: "SECRET" }),
+        });
+        h.render()(event());
+        await flushFeedback();
+        const expected = helpers.modelShortcutToast(
+          { status },
+          "Custom  Tag",
+          2,
+        );
         expect(h.toasts).toEqual(expected ? [expected] : []);
       });
     }
 
     test("thrown and rejected callbacks have handled connection feedback", async () => {
-      for (const onApplyModelTag of [() => { throw new Error("SECRET"); }, () => Promise.reject(new Error("SECRET"))]) {
-        const h = harness({ onApplyModelTag }); h.render()(event()); await flushFeedback();
+      for (const onApplyModelTag of [
+        () => {
+          throw new Error("SECRET");
+        },
+        () => Promise.reject(new Error("SECRET")),
+      ]) {
+        const h = harness({ onApplyModelTag });
+        h.render()(event());
+        await flushFeedback();
         expect(h.toasts[0].style).toBe("error");
         expect(h.toasts[0].message).toContain("sent or confirmed");
         expect(h.toasts[0].message).not.toContain("SECRET");
@@ -1762,36 +1937,75 @@ describe("ChatInput composer draft isolation + autosize consolidation (mitto-sus
     for (const transition of ["switch", "unmount", "A-B-A", "effect-replay"]) {
       test(`${transition} suppresses old feedback without cancelling backend operation`, async () => {
         let resolve;
-        const h = harness({ onApplyModelTag: () => new Promise((done) => { resolve = done; }) });
+        const h = harness({
+          onApplyModelTag: () =>
+            new Promise((done) => {
+              resolve = done;
+            }),
+        });
         h.render()(event());
         if (transition === "unmount") h.unmount();
         else if (transition === "effect-replay") h.replay();
-        else { h.render("B"); if (transition === "A-B-A") h.render("A"); }
-        resolve({ status: "applied" }); await flushFeedback();
+        else {
+          h.render("B");
+          if (transition === "A-B-A") h.render("A");
+        }
+        resolve({ status: "applied" });
+        await flushFeedback();
         expect(h.toasts).toEqual([]);
       });
     }
 
     test("irrelevant keys fall through, while Ctrl/Alt/repeat preserve compatibility", async () => {
-      const h = harness(); const handler = h.render();
-      for (const overrides of [{ shiftKey: false }, { metaKey: false }, { code: "Digit6" }, { code: "Numpad2" }, { code: "KeyA" }]) {
-        const e = event(overrides); handler(e); expect(e.preventDefault).not.toHaveBeenCalled();
+      const h = harness();
+      const handler = h.render();
+      for (const overrides of [
+        { shiftKey: false },
+        { metaKey: false },
+        { code: "Digit6" },
+        { code: "Numpad2" },
+        { code: "KeyA" },
+      ]) {
+        const e = event(overrides);
+        handler(e);
+        expect(e.preventDefault).not.toHaveBeenCalled();
       }
-      handler(event({ metaKey: false, ctrlKey: true, altKey: true, repeat: true }));
+      handler(
+        event({ metaKey: false, ctrlKey: true, altKey: true, repeat: true }),
+      );
       await flushFeedback();
       expect(h.sent).toEqual([["A", "Custom  Tag"]]);
     });
 
     test("slash navigation precedes model shortcuts; real Enter/send/queue paths are retained", () => {
       const select = jest.fn();
-      const slash = harness({ showSlashPicker: true, filteredSlashCommands: [{ name: "help" }], handleSlashCommandSelect: select });
+      const slash = harness({
+        showSlashPicker: true,
+        filteredSlashCommands: [{ name: "help" }],
+        handleSlashCommandSelect: select,
+      });
       slash.render()(event({ key: "Enter", code: "Enter", shiftKey: false }));
       expect(select).toHaveBeenCalledTimes(1);
       expect(slash.sent).toEqual([]);
       for (const sendKeyMode of ["enter", "ctrl-enter"]) {
-        const h = harness({ sendKeyMode }); const handler = h.render();
-        handler(event({ key: "Enter", code: "Enter", shiftKey: false, metaKey: sendKeyMode === "ctrl-enter" }));
-        handler(event({ key: "Enter", code: "Enter", metaKey: true, shiftKey: sendKeyMode === "ctrl-enter" }));
+        const h = harness({ sendKeyMode });
+        const handler = h.render();
+        handler(
+          event({
+            key: "Enter",
+            code: "Enter",
+            shiftKey: false,
+            metaKey: sendKeyMode === "ctrl-enter",
+          }),
+        );
+        handler(
+          event({
+            key: "Enter",
+            code: "Enter",
+            metaKey: true,
+            shiftKey: sendKeyMode === "ctrl-enter",
+          }),
+        );
         expect(h.sent).toEqual(["prompt"]);
         expect(h.queued).toEqual(["queue"]);
       }
@@ -1799,5 +2013,30 @@ describe("ChatInput composer draft isolation + autosize consolidation (mitto-sus
       expect(source).toContain("modelProfiles = []");
       expect(source).toContain("const modelOption = useMemo(");
     });
+  });
+});
+
+describe("ChatInput: linked-bead prompt arguments", () => {
+  test("prompt dispatch seeds beadsId parameters from the active conversation", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(
+      new URL("./ChatInput.js", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("autofillBeadsIssueArgs");
+    expect(source).toMatch(
+      /autofillBeadsIssueArgs\(\s*prompt,\s*sessionInfoSlice\?\.beads_issue,?\s*\)/,
+    );
+    expect(source).toContain("initialValues: linkedBeadArgs");
+    expect(source).toContain("linkedBeadNames");
+    expect(source).toMatch(
+      /promptDialogParameters\(prompt, "prompts", linkedBeadNames\)/,
+    );
+    expect(source).toContain(
+      "enqueue(hasLinkedBeadArgs ? linkedBeadArgs : null)",
+    );
+    expect(source).toContain(
+      "...(hasLinkedBeadArgs ? { arguments: linkedBeadArgs } : {})",
+    );
   });
 });

@@ -56,10 +56,15 @@ import {
   flattenPrompts,
   shouldOpenPromptDialog,
   promptDialogParameters,
+  autofillBeadsIssueArgs,
   fetchCachedParamNames,
   promptResolveAsLoop,
 } from "../utils/prompts.js";
-import { resolveModelShortcut, modelShortcutDigit, modelShortcutToast } from "../utils/modelShortcuts.js";
+import {
+  resolveModelShortcut,
+  modelShortcutDigit,
+  modelShortcutToast,
+} from "../utils/modelShortcuts.js";
 
 /**
  * wireMittoFileMarkers - Convert inert <span data-mitto-file="..." data-mitto-line="..."> markers
@@ -243,7 +248,9 @@ function ChatInputImpl({
       modelShortcutLifetimeRef.current = { sessionId, active: true };
     }
     const lifetime = modelShortcutLifetimeRef.current;
-    return () => { lifetime.active = false; };
+    return () => {
+      lifetime.active = false;
+    };
   }, [sessionId]);
 
   // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
@@ -1159,7 +1166,8 @@ function ChatInputImpl({
       const result = resolveModelShortcut(digit, modelShortcuts);
       const lifetime = modelShortcutLifetimeRef.current;
       const showFeedback = (outcome) => {
-        if (!lifetime.active || modelShortcutLifetimeRef.current !== lifetime) return;
+        if (!lifetime.active || modelShortcutLifetimeRef.current !== lifetime)
+          return;
         const toast = modelShortcutToast(outcome, result.modelTag, digit);
         if (toast) onShowToast?.(toast);
       };
@@ -1310,6 +1318,12 @@ function ChatInputImpl({
     // When agent is streaming, queue the prompt instead of sending immediately.
     // Mirror the non-streaming branch's parameter-dialog flow so `required: true`
     // parameters are collected before the prompt is enqueued (mitto-gtf).
+    const linkedBeadArgs = autofillBeadsIssueArgs(
+      prompt,
+      sessionInfoSlice?.beads_issue,
+    );
+    const linkedBeadNames = new Set(Object.keys(linkedBeadArgs));
+    const hasLinkedBeadArgs = Object.keys(linkedBeadArgs).length > 0;
     if (isStreaming && onAddToQueue && prompt.name) {
       if (isQueueFull) {
         setSendError(
@@ -1334,19 +1348,25 @@ function ChatInputImpl({
         ? await fetchCachedParamNames(sessionId, prompt.name)
         : undefined;
       if (
-        shouldOpenPromptDialog(prompt, "prompts", cachedForEnqueue) &&
+        shouldOpenPromptDialog(
+          prompt,
+          "prompts",
+          cachedForEnqueue,
+          linkedBeadNames,
+        ) &&
         onOpenPromptParamDialog
       ) {
         onOpenPromptParamDialog(
           prompt,
-          promptDialogParameters(prompt, "prompts"),
+          promptDialogParameters(prompt, "prompts", linkedBeadNames),
           async (userArgs) => {
             await enqueue(userArgs);
           },
+          { workingDir, initialValues: linkedBeadArgs },
         );
         return;
       }
-      await enqueue(null);
+      await enqueue(hasLinkedBeadArgs ? linkedBeadArgs : null);
       return;
     }
 
@@ -1360,22 +1380,31 @@ function ChatInputImpl({
         ? await fetchCachedParamNames(sessionId, prompt.name)
         : undefined;
       if (
-        shouldOpenPromptDialog(prompt, "prompts", cachedForSend) &&
+        shouldOpenPromptDialog(
+          prompt,
+          "prompts",
+          cachedForSend,
+          linkedBeadNames,
+        ) &&
         onOpenPromptParamDialog
       ) {
         onOpenPromptParamDialog(
           prompt,
-          promptDialogParameters(prompt, "prompts"),
+          promptDialogParameters(prompt, "prompts", linkedBeadNames),
           async (userArgs) => {
             onSend("", [], [], {
               promptName: prompt.name,
               arguments: userArgs,
             });
           },
+          { workingDir, initialValues: linkedBeadArgs },
         );
         return;
       }
-      onSend("", [], [], { promptName: prompt.name });
+      onSend("", [], [], {
+        promptName: prompt.name,
+        ...(hasLinkedBeadArgs ? { arguments: linkedBeadArgs } : {}),
+      });
     }
   };
 
@@ -3272,7 +3301,11 @@ function ChatInputImpl({
                             // as the model filter in ConfigOptionSelect.js):
                             // Ctrl+M switches from the prompts filter straight
                             // to the model picker. Cmd+M stays native.
-                            if (e.ctrlKey && !e.metaKey && (e.key === "m" || e.key === "M")) {
+                            if (
+                              e.ctrlKey &&
+                              !e.metaKey &&
+                              (e.key === "m" || e.key === "M")
+                            ) {
                               return;
                             }
                             handlePromptFilterKeyDown(e);

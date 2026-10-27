@@ -349,3 +349,28 @@ describe("app.js: header title inline editing (click title to rename, mitto-dpd)
     );
   });
 });
+
+describe("app.js: linked-bead prompt arguments", () => {
+  test("handleSendPromptToConversation seeds beadsId parameters from the active conversation", () => {
+    const idx = appJs.indexOf("const handleSendPromptToConversation =");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 9000);
+
+    expect(snippet).toMatch(
+      /const linkedBeadArgs = autofillBeadsIssueArgs\(\s*prompt,\s*session\?\.beads_issue,?\s*\);/,
+    );
+    expect(snippet).toMatch(
+      /const mergeLinkedBeadArgs = \(userArgs\) => \(\{\s*\.\.\.linkedBeadArgs,\s*\.\.\.\(userArgs \|\| \{\}\),\s*\}\);/,
+    );
+    // Every dispatch path that can carry prompt arguments must seed the
+    // linked bead: immediate loop, one-shot seed, and scheduled loop.
+    expect(snippet).toMatch(/initialValues: linkedBeadArgs/);
+    expect(snippet).toMatch(/arguments: mergeLinkedBeadArgs\(userArgs\)/);
+    expect(snippet).toMatch(
+      /seedConversationWithPrompt\([\s\S]*?mergeLinkedBeadArgs\(userArgs\)/,
+    );
+    expect(snippet).toMatch(
+      /openScheduleDialog\(mergeLinkedBeadArgs\(userArgs\)\)/,
+    );
+  });
+});

@@ -1601,6 +1601,8 @@ export function SessionPanel({
           allPrompts=${allPrompts}
           hasBeadsWorkspace=${hasBeadsWorkspace}
           isStreaming=${isStreaming}
+          beadsIssue=${sessionInfo?.beads_issue || ""}
+          workingDir=${sessionInfo?.working_dir || ""}
           onOpenPromptParamDialog=${onOpenPromptParamDialog}
           onConfigChange=${setLoopConfig}
           onDirtyChange=${handleLoopDirtyChange}

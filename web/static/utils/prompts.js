@@ -594,6 +594,29 @@ export function collectPromptArguments(prompt, typeValues) {
 }
 
 /**
+ * Auto-fill `beadsId` parameters from a conversation's linked beads issue.
+ *
+ * A conversation linked to a bead already has the issue in scope, so a prompt
+ * launched from that conversation (including a loop prompt picked from the
+ * composer) should not make the user re-select it. Only `beadsId` params are
+ * filled; other parameter types keep their normal dialog behavior.
+ *
+ * @param {Object} prompt     - prompt object with optional `parameters`
+ * @param {string} beadsIssue - linked beads issue ID, if any
+ * @returns {Object}          - arguments map (paramName -> value), possibly empty
+ */
+export function autofillBeadsIssueArgs(prompt, beadsIssue) {
+  const result = {};
+  if (!beadsIssue) return result;
+  for (const { name, type } of promptParameters(prompt)) {
+    if (type === "beadsId") {
+      result[name] = beadsIssue;
+    }
+  }
+  return result;
+}
+
+/**
  * Auto-fill prompt arguments from the conversation-menu host context.
  *
  * The conversation menu acts on a specific host conversation, so a

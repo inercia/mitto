@@ -665,3 +665,24 @@ if (isMountedChildRun) {
     });
   });
 }
+
+describe("LoopSettingsTab.js: linked-bead prompt arguments", () => {
+  test("seeds beadsId parameters from the conversation's linked issue", () => {
+    expect(tabJs).toMatch(/autofillBeadsIssueArgs/);
+    expect(tabJs).toMatch(
+      /const effectiveArgs = useMemo\([\s\S]*?autofillBeadsIssueArgs\(\s*selectedPrompt,\s*beadsIssue,?\s*\)[\s\S]*?draft\?\.arguments/,
+    );
+    expect(tabJs).toMatch(/initialValues: effectiveArgs/);
+    expect(tabJs).toMatch(/workingDir,/);
+  });
+
+  test("SessionPanel supplies the linked issue and working directory", async () => {
+    const panelJs = readFileSync(resolve(__dirname, "SessionPanel.js"), "utf8");
+    expect(panelJs).toMatch(
+      /beadsIssue=\$\{sessionInfo\?\.beads_issue \|\| ""\}/,
+    );
+    expect(panelJs).toMatch(
+      /workingDir=\$\{sessionInfo\?\.working_dir \|\| ""\}/,
+    );
+  });
+});

@@ -27,6 +27,7 @@ import {
   MENU_PARAM_TYPES,
   menuSatisfies,
   collectPromptArguments,
+  autofillBeadsIssueArgs,
   shouldOpenPromptDialog,
   promptDialogParameters,
   isAlwaysShownParam,
@@ -47,35 +48,77 @@ import {
 
 describe("flattenPrompts menu ordering and filtering", () => {
   const prompts = [
-    { name: "Zulu", group: "Beta", description: "Useful description", backgroundColor: "#ff0000" },
-    { name: "Alpha", group: "Beta", prompt: "body-only needle", backgroundColor: "#0000ff" },
+    {
+      name: "Zulu",
+      group: "Beta",
+      description: "Useful description",
+      backgroundColor: "#ff0000",
+    },
+    {
+      name: "Alpha",
+      group: "Beta",
+      prompt: "body-only needle",
+      backgroundColor: "#0000ff",
+    },
     { name: "First", group: "Alpha" },
     { name: "Ungrouped Z" },
     { name: "Ungrouped A" },
   ];
   test("groups sort first, Other last; name order and original identities match flat render order", () => {
     const result = flattenPrompts(prompts);
-    expect(result.groups.map((group) => group.name)).toEqual(["Alpha", "Beta", "Other"]);
-    expect(result.flat.map((prompt) => prompt.name)).toEqual(["First", "Alpha", "Zulu", "Ungrouped A", "Ungrouped Z"]);
-    expect(result.groups.flatMap((group) => group.prompts)).toEqual(result.flat);
+    expect(result.groups.map((group) => group.name)).toEqual([
+      "Alpha",
+      "Beta",
+      "Other",
+    ]);
+    expect(result.flat.map((prompt) => prompt.name)).toEqual([
+      "First",
+      "Alpha",
+      "Zulu",
+      "Ungrouped A",
+      "Ungrouped Z",
+    ]);
+    expect(result.groups.flatMap((group) => group.prompts)).toEqual(
+      result.flat,
+    );
     expect(result.groups[2].isOther).toBe(true);
     expect(result.flat[1]).toBe(prompts[1]);
     expect(prompts[0].name).toBe("Zulu");
   });
   test("trimmed case-insensitive name OR description only, not group/body", () => {
-    expect(flattenPrompts(prompts, { filterText: "  uSeFuL  " }).flat).toEqual([prompts[0]]);
-    expect(flattenPrompts(prompts, { filterText: "zULu" }).flat).toEqual([prompts[0]]);
+    expect(flattenPrompts(prompts, { filterText: "  uSeFuL  " }).flat).toEqual([
+      prompts[0],
+    ]);
+    expect(flattenPrompts(prompts, { filterText: "zULu" }).flat).toEqual([
+      prompts[0],
+    ]);
     expect(flattenPrompts(prompts, { filterText: "Beta" }).flat).toEqual([]);
-    expect(flattenPrompts(prompts, { filterText: "body-only needle" }).flat).toEqual([]);
-    expect(flattenPrompts([], { filterText: "anything" })).toEqual({ groups: [], flat: [] });
+    expect(
+      flattenPrompts(prompts, { filterText: "body-only needle" }).flat,
+    ).toEqual([]);
+    expect(flattenPrompts([], { filterText: "anything" })).toEqual({
+      groups: [],
+      flat: [],
+    });
     expect(flattenPrompts(prompts, { filterText: "   " }).flat).toHaveLength(5);
   });
   test("color sort stays within alphabetic groups, uncolored last and ties by name", () => {
     const uncolored = { name: "Aardvark", group: "Beta" };
     const red = { name: "Red A", group: "Beta", backgroundColor: "#ff0000" };
-    const result = flattenPrompts([...prompts, uncolored, red], { sortMode: "color" });
-    expect(result.groups.map((group) => group.name)).toEqual(["Alpha", "Beta", "Other"]);
-    expect(result.groups[1].prompts).toEqual([red, prompts[0], prompts[1], uncolored]);
+    const result = flattenPrompts([...prompts, uncolored, red], {
+      sortMode: "color",
+    });
+    expect(result.groups.map((group) => group.name)).toEqual([
+      "Alpha",
+      "Beta",
+      "Other",
+    ]);
+    expect(result.groups[1].prompts).toEqual([
+      red,
+      prompts[0],
+      prompts[1],
+      uncolored,
+    ]);
     expect(result.flat[1]).toBe(red);
     expect(result.flat[2]).toBe(prompts[0]);
   });
@@ -601,6 +644,52 @@ describe("collectPromptArguments", () => {
       parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
     };
     expect(collectPromptArguments(prompt, {})).toEqual({});
+  });
+});
+
+// =============================================================================
+// autofillBeadsIssueArgs Tests
+// =============================================================================
+
+describe("autofillBeadsIssueArgs", () => {
+  const issuePrompt = {
+    parameters: [
+      { name: "IssueID", type: "beadsId", required: false },
+      { name: "SubmitStrategy", type: "text", required: false },
+    ],
+  };
+
+  test("returns {} without a linked issue", () => {
+    expect(autofillBeadsIssueArgs(issuePrompt, "")).toEqual({});
+    expect(autofillBeadsIssueArgs(issuePrompt, null)).toEqual({});
+  });
+
+  test("returns {} when prompt has no parameters", () => {
+    expect(autofillBeadsIssueArgs({}, "mitto-42")).toEqual({});
+  });
+
+  test("fills every beadsId parameter from the linked issue", () => {
+    const prompt = {
+      parameters: [
+        { name: "IssueID", type: "beadsId" },
+        { name: "RelatedID", type: "beadsId" },
+        { name: "SubmitStrategy", type: "text" },
+      ],
+    };
+    expect(autofillBeadsIssueArgs(prompt, "mitto-42")).toEqual({
+      IssueID: "mitto-42",
+      RelatedID: "mitto-42",
+    });
+  });
+
+  test("does not fill non-beadsId parameter types", () => {
+    const prompt = {
+      parameters: [
+        { name: "IssueID", type: "text" },
+        { name: "Target", type: "beadsTitle" },
+      ],
+    };
+    expect(autofillBeadsIssueArgs(prompt, "mitto-42")).toEqual({});
   });
 });
 
