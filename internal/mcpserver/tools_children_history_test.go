@@ -341,3 +341,65 @@ func TestChildrenTasksHistory_ConcurrentAppends(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestChildrenTasksHistory_LargeHistoryLeavesWaitCompact(t *testing.T) {
+	s, _, parent, children := setupParentChildSessions(t, 1)
+	child := children[0]
+	for i := 0; i < 21; i++ {
+		_, out, err := s.handleChildrenTasksReport(t.Context(), nil, ChildrenTasksReportInput{
+			SelfID:  child,
+			Status:  "in_progress",
+			Summary: fmt.Sprintf("retained-history-%02d-%s", i, strings.Repeat("x", 256)),
+		})
+		if err != nil || !out.Success {
+			t.Fatalf("retain report %d: %+v %v", i, out, err)
+		}
+	}
+
+	// The history endpoint returns the bounded retained evidence; a wait must
+	// expose only its selected task result, never this accumulated history.
+	if got := historyRead(t, s, ChildrenTasksHistoryInput{SelfID: parent}); len(got.Entries) != 5 || !got.HasMore {
+		t.Fatalf("default history page: %+v", got)
+	}
+	if got := historyRead(t, s, ChildrenTasksHistoryInput{SelfID: parent, Limit: historyPtr(1)}); len(got.Entries) != 1 || !got.HasMore {
+		t.Fatalf("one-entry history page: %+v", got)
+	}
+	if got := historyRead(t, s, ChildrenTasksHistoryInput{SelfID: parent, Limit: historyPtr(20)}); len(got.Entries) != 20 || !got.HasMore {
+		t.Fatalf("twenty-entry history page: %+v", got)
+	}
+
+	started, release := make(chan struct{}), make(chan struct{})
+	s.sessionManager = &reportWaitBarrierManager{
+		mockSessionManagerForAutoResume: &mockSessionManagerForAutoResume{},
+		onWaiting: func(waiting bool) {
+			if waiting {
+				close(started)
+				<-release
+			}
+		},
+	}
+	result := startTaskScopeWait(t, s, t.Context(), ChildrenTasksWaitInput{
+		SelfID: parent, ChildrenList: children, TaskID: "B", Prompt: "finish B", TimeoutSeconds: 5,
+	})
+	<-started
+	_, reported, err := s.handleChildrenTasksReport(t.Context(), nil, ChildrenTasksReportInput{
+		SelfID: child, TaskID: "B", Status: "completed", Summary: "selected B result",
+	})
+	if err != nil || !reported.Success {
+		t.Fatalf("selected report: %+v %v", reported, err)
+	}
+	close(release)
+	got := <-result
+	if got.err != nil || !got.output.Success || got.output.TimedOut || len(got.output.Reports) != 1 ||
+		got.output.Reports[child].Report == nil || got.output.Reports[child].Report.Summary != "selected B result" ||
+		!got.output.Reports[child].Completed {
+		t.Fatalf("wait did not select B compactly: %+v %v", got.output, got.err)
+	}
+	encoded, err := json.Marshal(got.output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "retained-history-") || strings.Contains(string(encoded), "raw_report") {
+		t.Fatalf("wait expanded retained history: %s", encoded)
+	}
+}
