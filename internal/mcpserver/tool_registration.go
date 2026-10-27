@@ -388,6 +388,16 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleChildrenTasksReport)
 
+	// mitto_children_tasks_history - Read genuine evidence owned by the caller
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_children_tasks_history",
+		Description: "Read genuine child-report history owned only by your resolved conversation; no target parent or workspace can be selected. " +
+			"Does not require Can Send Prompt or start/resume a wait. Optional child_id, nonempty effective task_id, association (explicit, inferred, unassociated), and exact report_id filters intersect. " +
+			"Omit task_id for all tasks. report_id and before_report_id cannot be combined. " +
+			"Newest-first append order, default limit 5, valid limits 1..20. before_report_id is an exclusive stable position before filtering; use next_before_report_id when has_more. " +
+			"Returns stable IDs, receipt times, supplied/effective task IDs, association and full lossless raw_report JSON strings, including evidence retained after child deletion. " + selfIDNote,
+	}, s.handleChildrenTasksHistory)
+
 	// mitto_conversation_history - Search and retrieve conversation history
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_history",

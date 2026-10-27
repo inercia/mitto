@@ -730,13 +730,21 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	reports := make(map[string]ChildReportInfo, len(validChildren))
 	for _, childID := range validChildren {
 		p := snapshot[childID]
-		info := ChildReportInfo{Completed: p.taskSucceeded(), Status: "pending", Reason: p.Reason}
+		info := ChildReportInfo{
+			Completed: p.taskSucceeded(), TaskTerminal: p.taskTerminal(), WaitResolved: p.waitResolved(),
+			Status: "pending", Reason: p.Reason, RequestedTaskID: p.RequestedTaskID, TaskMatches: p.TaskMatches,
+			HasMoreHistory: p.HasMoreHistory, HasUnassociatedEvidence: p.HasUnassociatedEvidence,
+		}
 		if p.Entry != nil {
+			info.ReportID = p.Entry.ID
+			info.SuppliedTaskID, info.EffectiveTaskID = p.Entry.SuppliedTaskID, p.Entry.EffectiveTaskID
+			info.Association = string(p.Entry.Association)
+			info.Outcome = &ChildReportOutcome{Status: p.Outcome.Status, Known: p.Outcome.Known, Terminal: p.Outcome.Terminal, Successful: p.Outcome.Successful}
 			var data ChildReportData
 			if err := json.Unmarshal(p.Entry.Report, &data); err == nil {
 				info.Report = &data
 			}
-			info.Timestamp = p.Entry.ReceivedAt.Format(time.RFC3339)
+			info.Timestamp = p.Entry.ReceivedAt.Format(time.RFC3339Nano)
 			if p.TaskMatches {
 				info.Status = p.Outcome.Status
 			} else {
@@ -745,6 +753,8 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 			}
 		}
 		if d := p.Diagnostic; d != nil && !p.taskTerminal() {
+			info.Diagnostic = &ChildReportDiagnostic{Kind: string(d.Kind), Reason: d.Reason, Message: d.Message,
+				ObservedAt: d.ObservedAt.Format(time.RFC3339Nano), TaskID: d.TaskID}
 			info.Status = "agent_not_responding"
 			if d.Kind == childDiagnosticFailed {
 				info.Status = "failed"

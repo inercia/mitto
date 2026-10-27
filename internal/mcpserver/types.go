@@ -1076,11 +1076,73 @@ type ChildReportData struct {
 
 // ChildReportInfo contains the report from a single child conversation.
 type ChildReportInfo struct {
-	Completed bool             `json:"completed"`
-	Report    *ChildReportData `json:"report,omitempty"`
-	Timestamp string           `json:"timestamp,omitempty"` // ISO 8601
-	Status    string           `json:"status,omitempty"`    // "pending", "completed", "not_running"
-	Reason    string           `json:"reason,omitempty"`    // Diagnostic hint when report is incomplete (e.g., "still_processing", "session_unregistered", "archived")
+	Completed               bool                   `json:"completed"` // Matching successful genuine completion, not tool success
+	Report                  *ChildReportData       `json:"report,omitempty"`
+	Timestamp               string                 `json:"timestamp,omitempty"` // ISO 8601
+	Status                  string                 `json:"status,omitempty"`    // Applicable raw status, governing diagnostic, or pending
+	Reason                  string                 `json:"reason,omitempty"`    // Diagnostic hint when report is incomplete (e.g., "still_processing", "session_unregistered", "archived")
+	TaskTerminal            bool                   `json:"task_terminal"`
+	WaitResolved            bool                   `json:"wait_resolved"`
+	Outcome                 *ChildReportOutcome    `json:"outcome,omitempty"`
+	ReportID                string                 `json:"report_id,omitempty"`
+	RequestedTaskID         string                 `json:"requested_task_id"`
+	SuppliedTaskID          string                 `json:"supplied_task_id"`
+	EffectiveTaskID         string                 `json:"effective_task_id"`
+	Association             string                 `json:"association,omitempty"`
+	TaskMatches             bool                   `json:"task_matches"`
+	Diagnostic              *ChildReportDiagnostic `json:"diagnostic,omitempty"`
+	HasMoreHistory          bool                   `json:"has_more_history"`
+	HasUnassociatedEvidence bool                   `json:"has_unassociated_evidence"`
+}
+
+// ChildReportOutcome describes raw genuine evidence independently of whether it
+// matches the requested task. Neither terminal nor successful means acceptance PASS.
+type ChildReportOutcome struct {
+	Status     string `json:"status"`
+	Known      bool   `json:"known"`
+	Terminal   bool   `json:"terminal"`
+	Successful bool   `json:"successful"`
+}
+
+// ChildReportDiagnostic is metadata, never a fabricated genuine report payload.
+type ChildReportDiagnostic struct {
+	Kind       string `json:"kind"`
+	Reason     string `json:"reason,omitempty"`
+	Message    string `json:"message,omitempty"`
+	ObservedAt string `json:"observed_at"`
+	TaskID     string `json:"task_id"`
+}
+
+// ChildrenTasksHistoryInput can only filter the resolved caller's own history.
+// Pointers distinguish omitted defaults from explicitly invalid empty/zero input.
+type ChildrenTasksHistoryInput struct {
+	SelfID         string  `json:"self_id"`
+	ChildID        string  `json:"child_id,omitempty"`
+	TaskID         *string `json:"task_id,omitempty"`
+	Association    *string `json:"association,omitempty"`
+	ReportID       *string `json:"report_id,omitempty"`
+	BeforeReportID *string `json:"before_report_id,omitempty"`
+	Limit          *int    `json:"limit,omitempty"`
+}
+
+// ChildReportHistoryEntry returns original JSON as a string so schema generation
+// cannot reinterpret unknown fields/numbers or base64-encode a RawMessage.
+type ChildReportHistoryEntry struct {
+	ReportID        string `json:"report_id"`
+	ChildID         string `json:"child_id"`
+	ReceivedAt      string `json:"received_at"`
+	SuppliedTaskID  string `json:"supplied_task_id"`
+	EffectiveTaskID string `json:"effective_task_id"`
+	Association     string `json:"association"`
+	RawReport       string `json:"raw_report"`
+}
+
+type ChildrenTasksHistoryOutput struct {
+	Success            bool                      `json:"success"`
+	Entries            []ChildReportHistoryEntry `json:"entries"`
+	HasMore            bool                      `json:"has_more"`
+	NextBeforeReportID string                    `json:"next_before_report_id,omitempty"`
+	Error              string                    `json:"error,omitempty"`
 }
 
 // ChildrenTasksReportInput is the input for mitto_children_tasks_report tool.
