@@ -2736,8 +2736,8 @@ func EstimateTokens(text string) int {
 // dispatchPromptMaxRetries is the number of retry attempts (beyond the
 // initial attempt) for a transient prompt-mode close-phase dispatch failure
 // before giving up and (if configured) notifying the user. var (not const)
-// so tests can shrink the retry cadence — mirrors the titleMaxRetries
-// pattern in internal/conversation/title.go.
+// so tests can shrink the retry cadence — mirrors the injectable
+// TitleRetryPolicy seam in internal/conversation/title.go.
 var dispatchPromptMaxRetries = 2 // 3 total attempts
 
 // dispatchPromptRetryBaseDelay is the initial delay between retries

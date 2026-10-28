@@ -244,7 +244,7 @@ func TestSessionNeedsTitle_EmptyRenameReenablesAutoTitle(t *testing.T) {
 
 func TestGenerateAndSetTitle_NilStore(t *testing.T) {
 	// Should not panic with nil store
-	GenerateAndSetTitle(TitleGenerationConfig{
+	job := GenerateAndSetTitle(TitleGenerationConfig{
 		Store:     nil,
 		SessionID: "test",
 		Message:   "Hello",
@@ -252,9 +252,9 @@ func TestGenerateAndSetTitle_NilStore(t *testing.T) {
 			// This won't be called since auxiliary isn't initialized
 		},
 	})
-
-	// Give goroutine time to run (it should exit early due to auxiliary not being initialized)
-	// This test mainly verifies no panic occurs
+	// The goroutine exits early because the auxiliary manager is nil; join it so
+	// this test mainly verifies no panic occurs and nothing is left running.
+	job.Wait()
 }
 
 func TestGenerateQuickTitle(t *testing.T) {

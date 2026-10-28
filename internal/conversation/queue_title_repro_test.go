@@ -86,6 +86,7 @@ func newQueueTitleReproWorker(t *testing.T, provider auxiliary.ProcessProvider) 
 		sessionManager:   sm,
 		auxiliaryManager: auxiliary.NewWorkspaceAuxiliaryManager(provider, nil),
 		ctx:              context.Background(),
+		retry:            &TitleRetryPolicy{MaxRetries: 3, BaseDelay: time.Millisecond},
 	}
 	return worker, queue, QueueTitleRequest{SessionID: sessionID, MessageID: queued.ID, Message: message}
 }
@@ -93,10 +94,6 @@ func newQueueTitleReproWorker(t *testing.T, provider auxiliary.ProcessProvider) 
 // TestQueueTitleWorker_RetriesProcessBusyUntilMessageTitled reproduces mitto-0qeg:
 // transient shared-process load shedding must retain one job until it can title the queued message.
 func TestQueueTitleWorker_RetriesProcessBusyUntilMessageTitled(t *testing.T) {
-	origMax, origDelay := titleMaxRetries, titleRetryBaseDelay
-	titleMaxRetries, titleRetryBaseDelay = 3, time.Millisecond
-	t.Cleanup(func() { titleMaxRetries, titleRetryBaseDelay = origMax, origDelay })
-
 	provider := &queueTitleRetryProvider{}
 	worker, queue, req := newQueueTitleReproWorker(t, provider)
 	worker.processRequest(req)
@@ -116,10 +113,6 @@ func TestQueueTitleWorker_RetriesProcessBusyUntilMessageTitled(t *testing.T) {
 // TestQueueTitleWorker_CancelsBusyRetryAfterDispatch pins the paired cancellation contract:
 // once dispatch pops the message, a pending process-busy retry must stop without a callback.
 func TestQueueTitleWorker_CancelsBusyRetryAfterDispatch(t *testing.T) {
-	origMax, origDelay := titleMaxRetries, titleRetryBaseDelay
-	titleMaxRetries, titleRetryBaseDelay = 3, time.Millisecond
-	t.Cleanup(func() { titleMaxRetries, titleRetryBaseDelay = origMax, origDelay })
-
 	provider := &queueTitleRetryProvider{
 		firstAttempt: make(chan struct{}),
 		releaseFirst: make(chan struct{}),

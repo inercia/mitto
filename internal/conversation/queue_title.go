@@ -35,6 +35,7 @@ type QueueTitleWorker struct {
 	cancel           context.CancelFunc
 	sessionManager   *SessionManager                      // Session manager for workspace lookup
 	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager // Auxiliary manager for title generation
+	retry            *TitleRetryPolicy                    // Retry cadence; nil means DefaultTitleRetryPolicy()
 	jobsMu           sync.Mutex
 	jobs             map[queueTitleJobKey]struct{}
 
@@ -179,9 +180,10 @@ func (w *QueueTitleWorker) processRequest(req QueueTitleRequest) {
 		}
 	}
 
+	policy := w.retry.normalized()
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
-			delay := titleRetryDelay(attempt)
+			delay := policy.delay(attempt)
 			timer := time.NewTimer(delay)
 			select {
 			case <-w.ctx.Done():
@@ -209,7 +211,7 @@ func (w *QueueTitleWorker) processRequest(req QueueTitleRequest) {
 					w.logger.Info("Queue title generation waiting for process quiescence",
 						"session_id", req.SessionID, "message_id", req.MessageID,
 						"workspace_uuid", workspaceUUID, "attempt", attempt+1,
-						"retry_delay", titleRetryDelay(attempt+1))
+						"retry_delay", policy.delay(attempt+1))
 				}
 				continue
 			}

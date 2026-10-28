@@ -130,6 +130,12 @@ type TitleGenerationConfig struct {
 	// GenerateTitle. On success, NameExplicit is set (not just preserved) so
 	// a later internal auto-title retry cannot clobber the fresh result.
 	Force bool
+	// Retry overrides the title retry cadence. Nil means
+	// DefaultTitleRetryPolicy().
+	Retry *TitleRetryPolicy
+	// Context bounds the whole retry schedule. Nil means context.Background().
+	// Cancelling it aborts pending backoff waits and prevents further attempts.
+	Context context.Context
 }
 
 type titleJobKey struct {
@@ -186,47 +192,119 @@ func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	return meta.Name == "" || meta.NameIsFallback
 }
 
-// titleMaxRetries is the maximum number of retry attempts for title generation.
-// var (not const) so tests can override the cadence to exercise the retry loop
-// in unit time. See internal/conversation/title_wedge_repro_test.go (mitto-ammz.1).
-var titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
+// TitleRetryPolicy is the retry cadence for title generation. The zero value is
+// normalized to DefaultTitleRetryPolicy(), so a nil *TitleRetryPolicy means
+// "production cadence".
+//
+// The cadence used to live in package-level mutable variables so tests could
+// shrink it. A title job outliving its test then raced with the next test
+// rewriting those variables (mitto-1vi), so the cadence is now an immutable
+// per-call value.
+type TitleRetryPolicy struct {
+	// MaxRetries is the number of retries after the initial attempt.
+	MaxRetries int
+	// BaseDelay is the delay before retry N: BaseDelay << (N-1).
+	BaseDelay time.Duration
+}
 
-// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
-// var (not const) so tests can override the cadence. See titleMaxRetries.
-var titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
+// DefaultTitleRetryPolicy is the production cadence: 3 retries after the
+// initial attempt with a 30s base delay, i.e. delays of 30s, 60s and 120s.
+func DefaultTitleRetryPolicy() TitleRetryPolicy {
+	return TitleRetryPolicy{MaxRetries: 3, BaseDelay: 30 * time.Second}
+}
 
-func titleRetryDelay(attempt int) time.Duration {
+// normalized returns p with unset fields replaced by their production defaults.
+// It is nil-safe so callers can pass an unset policy.
+func (p *TitleRetryPolicy) normalized() TitleRetryPolicy {
+	def := DefaultTitleRetryPolicy()
+	if p == nil {
+		return def
+	}
+	out := *p
+	if out.MaxRetries <= 0 {
+		out.MaxRetries = def.MaxRetries
+	}
+	if out.BaseDelay <= 0 {
+		out.BaseDelay = def.BaseDelay
+	}
+	return out
+}
+
+// delay returns the backoff before the given retry attempt. The attempt is
+// clamped to MaxRetries so the process-busy retention path stays capped at the
+// maximum delay instead of growing without bound.
+func (p TitleRetryPolicy) delay(attempt int) time.Duration {
 	if attempt <= 0 {
 		return 0
 	}
-	maxAttempt := titleMaxRetries
-	if maxAttempt < 1 {
-		maxAttempt = 1
+	p = p.normalized()
+	if attempt > p.MaxRetries {
+		attempt = p.MaxRetries
 	}
-	if attempt > maxAttempt {
-		attempt = maxAttempt
+	return p.BaseDelay * time.Duration(1<<(attempt-1))
+}
+
+// TitleJob is a handle on the asynchronous title generation started by
+// GenerateAndSetTitle. It lets callers join the retry goroutine instead of
+// letting it outlive the work that asked for it.
+type TitleJob struct {
+	done chan struct{}
+}
+
+// Done returns a channel that is closed once the job has finished. It is
+// nil-safe: a nil job yields an already-closed channel so callers never block.
+func (j *TitleJob) Done() <-chan struct{} {
+	if j == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return closed
 	}
-	return titleRetryBaseDelay * time.Duration(1<<(attempt-1))
+	return j.done
+}
+
+// Wait blocks until the job has finished. It is nil-safe.
+func (j *TitleJob) Wait() {
+	<-j.Done()
+}
+
+// sleepCtx waits for d or until ctx is done, reporting whether the full delay
+// elapsed. It replaces time.Sleep so a cancelled job stops promptly instead of
+// sleeping through its backoff.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 const (
 	// titleSessionCreateTimeout is the timeout for a single title generation attempt.
 	// This covers the full round-trip: auxiliary session creation + the title prompt itself.
-	// 20 minutes per attempt is generous. With titleMaxRetries=3 the total worst-case
-	// wall time is ≈ 83 minutes.
+	// 20 minutes per attempt is generous. With the default policy (3 retries) the
+	// total worst-case wall time is ≈ 83 minutes.
 	titleSessionCreateTimeout = 20 * time.Minute
 )
 
 // GenerateAndSetTitle generates a title for a session using the workspace-scoped auxiliary session.
-// This runs asynchronously and doesn't block the caller.
-// It retries up to titleMaxRetries times with exponential backoff on transient failures.
+// This runs asynchronously and doesn't block the caller. It returns a handle that can be
+// waited on, or nil when no goroutine was started (coalesced duplicate, no workspace, or
+// no auxiliary manager).
+// It retries up to the configured policy's MaxRetries times with exponential backoff on
+// transient failures.
 // Proactive ErrProcessBusy load shedding keeps one coalesced persisted job pending at
 // the maximum backoff until the shared process becomes quiescent.
 // The OnTitleGenerated callback is called when the title is successfully generated and saved.
 //
 // Before launching the async goroutine, it synchronously sets a quick fallback title extracted
 // from the message text so the UI shows something immediately without waiting for the auxiliary.
-func GenerateAndSetTitle(cfg TitleGenerationConfig) {
+func GenerateAndSetTitle(cfg TitleGenerationConfig) *TitleJob {
 	// mitto-6my: strip raw Go-template action directives (e.g. the fragment
 	// include that opens every JIRA/GitHub builtin prompt) before feeding
 	// the message to either the quick fallback or the LLM titler below —
@@ -267,10 +345,14 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		if cfg.Logger != nil {
 			cfg.Logger.Debug("Coalescing duplicate title generation job", "session_id", cfg.SessionID)
 		}
-		return
+		return nil
 	}
 
+	job := &TitleJob{done: make(chan struct{})}
 	go func() {
+		// Close the handle after releasing the coalescing claim so a caller
+		// that waits on the job cannot observe the claim still held.
+		defer close(job.done)
 		defer releaseJob()
 		if cfg.WorkspaceUUID == "" {
 			if cfg.Logger != nil {
@@ -288,11 +370,20 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			return
 		}
 
+		runCtx := cfg.Context
+		if runCtx == nil {
+			runCtx = context.Background()
+		}
+		policy := cfg.Retry.normalized()
+
 		var title string
 		var lastErr error
 		waitForQuiescence := false
 		for attempt := 0; ; attempt++ {
-			pendingRecovery := attempt > titleMaxRetries
+			if runCtx.Err() != nil {
+				return
+			}
+			pendingRecovery := attempt > policy.MaxRetries
 			// A forced regenerate must proceed even if the session already has
 			// a final/explicit title — that's the explicit user request.
 			if !cfg.Force && pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
@@ -302,7 +393,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				// A quick title may already be set, but we still try auxiliary to get a
 				// better (more descriptive) title. After the bounded retry schedule,
 				// process-busy recovery stays capped at its maximum delay.
-				delay := titleRetryDelay(attempt)
+				delay := policy.delay(attempt)
 				if cfg.Logger != nil {
 					if pendingRecovery {
 						cfg.Logger.Debug("Polling pending title generation after process busy",
@@ -317,7 +408,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				}
 				if waitForQuiescence {
 					waitStart := time.Now()
-					waitCtx, waitCancel := context.WithTimeout(context.Background(), delay)
+					waitCtx, waitCancel := context.WithTimeout(runCtx, delay)
 					observed := cfg.AuxiliaryManager.WaitForProcessQuiescence(waitCtx, cfg.WorkspaceUUID)
 					waitCancel()
 					if observed && cfg.Logger != nil {
@@ -325,10 +416,12 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 							"session_id", cfg.SessionID)
 					}
 					if remaining := delay - time.Since(waitStart); !observed && remaining > 0 {
-						time.Sleep(remaining)
+						if !sleepCtx(runCtx, remaining) {
+							return
+						}
 					}
-				} else {
-					time.Sleep(delay)
+				} else if !sleepCtx(runCtx, delay) {
+					return
 				}
 				if !cfg.Force && pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
 					return
@@ -337,7 +430,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			waitForQuiescence = false
 
 			// The 20-minute budget covers auxiliary session setup and the prompt itself.
-			ctx, cancel := context.WithTimeout(context.Background(), titleSessionCreateTimeout)
+			ctx, cancel := context.WithTimeout(runCtx, titleSessionCreateTimeout)
 			if cfg.Force {
 				// Message carries a composed multi-turn context excerpt (see
 				// BuildTitleContext), not a single initial message.
@@ -346,6 +439,11 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				title, lastErr = cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
 			}
 			cancel()
+			// A cancelled job must not write metadata or start another attempt,
+			// even if the auxiliary call happened to succeed first.
+			if runCtx.Err() != nil {
+				return
+			}
 
 			if lastErr == nil && title != "" {
 				break
@@ -359,7 +457,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 						"error", lastErr,
 						"session_id", cfg.SessionID,
 						"attempt", attempt+1,
-						"max_attempts", titleMaxRetries+1)
+						"max_attempts", policy.MaxRetries+1)
 				}
 			}
 
@@ -369,15 +467,15 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			if errors.Is(lastErr, acperrors.ErrProcessBusy) {
 				if cfg.Store != nil && cfg.SessionID != "" {
 					waitForQuiescence = true
-					if attempt == titleMaxRetries && cfg.Logger != nil {
+					if attempt == policy.MaxRetries && cfg.Logger != nil {
 						cfg.Logger.Info("Retaining pending title generation until process quiescence",
 							"session_id", cfg.SessionID,
-							"delay", titleRetryDelay(attempt+1))
+							"delay", policy.delay(attempt+1))
 					}
 					continue
 				}
 				waitForQuiescence = false
-				if attempt >= titleMaxRetries {
+				if attempt >= policy.MaxRetries {
 					break
 				}
 				continue
@@ -410,7 +508,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				return
 			}
 
-			if attempt >= titleMaxRetries {
+			if attempt >= policy.MaxRetries {
 				break
 			}
 		}
@@ -421,7 +519,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 					"error", lastErr,
 					"session_id", cfg.SessionID,
 					"workspace_uuid", cfg.WorkspaceUUID,
-					"attempts", titleMaxRetries+1)
+					"attempts", policy.MaxRetries+1)
 			}
 			return
 		}
@@ -464,6 +562,8 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			cfg.OnTitleGenerated(cfg.SessionID, title)
 		}
 	}()
+
+	return job
 }
 
 // titleContextMaxUserPrompts bounds how many of the most recent user prompts

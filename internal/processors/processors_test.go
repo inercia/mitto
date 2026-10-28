@@ -6050,7 +6050,7 @@ func TestApplyOnClose_PromptMode_SkipsForParentDeletedReason(t *testing.T) {
 func TestApplyOnClose_PromptMode_RetriesOnTransientFailure(t *testing.T) {
 	// Test-seam: shrink the retry cadence so the test doesn't race the
 	// production 2s base delay against its own polling window. Mirrors the
-	// titleRetryBaseDelay override pattern in title_wedge_repro_test.go.
+	// injectable retry-cadence seam used by the title tests.
 	// The injected error below is saturation-shaped (mitto-7q2), so it is
 	// retried on dispatchSaturationRetryInterval rather than
 	// dispatchPromptRetryBaseDelay — shrink both so this stays fast.

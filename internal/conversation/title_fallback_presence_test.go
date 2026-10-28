@@ -2,7 +2,6 @@ package conversation
 
 import (
 	"testing"
-	"time"
 
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/session"
@@ -40,12 +39,9 @@ func TestFallbackTitleMakesAutoChildNoLongerUntitled(t *testing.T) {
 		AuxiliaryManager: mgr,
 		OnTitleGenerated: func(_, _ string) { callbackCount++ },
 	}
-	GenerateAndSetTitle(cfg)
+	job := GenerateAndSetTitle(cfg)
 
-	deadline := time.Now().Add(time.Second)
-	for provider.calls.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
+	job.Wait()
 	if provider.calls.Load() == 0 {
 		t.Fatal("auxiliary failure path was not exercised")
 	}
@@ -63,23 +59,12 @@ func TestFallbackTitleMakesAutoChildNoLongerUntitled(t *testing.T) {
 		t.Fatal("mitto-zzzr: auto-child has a persisted fallback title but sessionHasNoTitle returned true")
 	}
 
-	GenerateAndSetTitle(cfg)
+	job = GenerateAndSetTitle(cfg)
 	if callbackCount != 1 {
 		t.Fatalf("mitto-zzzr: fallback callback fired %d times, want once for the single metadata change", callbackCount)
 	}
 
-	// GenerateAndSetTitle is asynchronous. Do not let this test return while its
-	// job can still read retry globals that a following test overrides.
-	key := titleJobKey{store: store, sessionID: sessionID}
-	deadline = time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		titleJobs.Lock()
-		_, active := titleJobs.active[key]
-		titleJobs.Unlock()
-		if !active {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("title generation job did not finish")
+	// GenerateAndSetTitle is asynchronous; join the job so it cannot outlive
+	// this test and touch a closed store.
+	job.Wait()
 }

@@ -50,7 +50,7 @@ func TestGenerateAndSetTitle_Force_SkipsQuickFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)
 	}
-	defer store.Close()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	sessionID := "force-skip-fallback"
 	if err := store.Create(session.Metadata{
@@ -64,13 +64,21 @@ func TestGenerateAndSetTitle_Force_SkipsQuickFallback(t *testing.T) {
 	provider := &captureAuxProvider{err: errors.New("aux not reached synchronously")}
 	mgr := auxiliary.NewWorkspaceAuxiliaryManager(provider, nil)
 
-	GenerateAndSetTitle(TitleGenerationConfig{
+	job := GenerateAndSetTitle(TitleGenerationConfig{
 		Store:            store,
 		SessionID:        sessionID,
 		Message:          "User: fix the login bug\nAssistant: sure, looking into it",
 		WorkspaceUUID:    "test-workspace",
 		AuxiliaryManager: mgr,
 		Force:            true,
+		Context:          ctx,
+	})
+	// Cancel and join the retry goroutine before the store is closed; a leaked
+	// job would otherwise outlive this test and read a closed store.
+	t.Cleanup(func() {
+		cancel()
+		job.Wait()
+		_ = store.Close()
 	})
 
 	meta, err := store.GetMetadata(sessionID)
@@ -120,7 +128,7 @@ func TestGenerateAndSetTitle_Force_OverridesExplicitNameAndUsesContextTemplate(t
 	mgr := auxiliary.NewWorkspaceAuxiliaryManager(provider, nil)
 
 	done := make(chan string, 1)
-	GenerateAndSetTitle(TitleGenerationConfig{
+	job := GenerateAndSetTitle(TitleGenerationConfig{
 		Store:            store,
 		SessionID:        sessionID,
 		Message:          "User: what about sessions?\nAssistant: use JWT tokens",
@@ -143,6 +151,7 @@ func TestGenerateAndSetTitle_Force_OverridesExplicitNameAndUsesContextTemplate(t
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for OnTitleGenerated callback")
 	}
+	job.Wait()
 
 	meta, err := store.GetMetadata(sessionID)
 	if err != nil {

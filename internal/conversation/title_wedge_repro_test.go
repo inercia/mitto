@@ -44,7 +44,7 @@ func (p *wedgeProvider) CloseWorkspaceAuxiliary(_ string) error {
 // The bug: the title-generation retry loop is failure-agnostic — it treats the
 // auggie agent-internal-deadline wedge (-32603 "context deadline exceeded",
 // agent_internal_deadline=true) the same as any transient error and fires
-// titleMaxRetries+1 = 4 total attempts. Each attempt burns the full 60s
+// TitleRetryPolicy.MaxRetries+1 = 4 total attempts. Each attempt burns the full 60s
 // extended-MCP budget with near-zero chance of success (the wedge is a wedged
 // process, not a transient), producing the storms observed in the bead.
 //
@@ -58,21 +58,14 @@ func (p *wedgeProvider) CloseWorkspaceAuxiliary(_ string) error {
 // Current behavior (this test asserts it fails today): the loop fires 4 total
 // attempts, so we assert calls <= 2 and this fails with calls == 4.
 //
-// The test overrides titleMaxRetries and titleRetryBaseDelay so the entire
-// storm completes in ~1ms of wall-clock rather than the production 7½ minutes.
-// The failure-mode assertion is invariant to that cadence override — what
-// changes across the fix is WHICH attempts the loop makes, not HOW FAST it
-// makes them.
+// The test injects a fast retry policy so the entire storm completes in ~1ms of
+// wall-clock rather than the production 7½ minutes. The failure-mode assertion is
+// invariant to that cadence override — what changes across the fix is WHICH
+// attempts the loop makes, not HOW FAST it makes them.
 func TestGenerateAndSetTitle_WedgeSignal_BoundsRetries(t *testing.T) {
 	// Test-seam: shrink the retry cadence so the whole storm fits in the
-	// test wall-clock. Restore on exit so parallel tests are not affected.
-	origMax, origDelay := titleMaxRetries, titleRetryBaseDelay
-	titleMaxRetries = 3 // 4 total attempts, matching production
-	titleRetryBaseDelay = time.Microsecond
-	t.Cleanup(func() {
-		titleMaxRetries = origMax
-		titleRetryBaseDelay = origDelay
-	})
+	// test wall-clock.
+	retry := TitleRetryPolicy{MaxRetries: 3, BaseDelay: time.Microsecond}
 
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -95,12 +88,13 @@ func TestGenerateAndSetTitle_WedgeSignal_BoundsRetries(t *testing.T) {
 	mgr := auxiliary.NewWorkspaceAuxiliaryManager(provider, nil)
 
 	done := make(chan string, 1)
-	GenerateAndSetTitle(TitleGenerationConfig{
+	job := GenerateAndSetTitle(TitleGenerationConfig{
 		Store:            store,
 		SessionID:        sessionID,
 		Message:          "How do I fix the aux-session retry storm on cgw-managed-tools?",
 		WorkspaceUUID:    "test-workspace-uuid",
 		AuxiliaryManager: mgr,
+		Retry:            &retry,
 		OnTitleGenerated: func(_, title string) {
 			select {
 			case done <- title:
@@ -120,25 +114,9 @@ func TestGenerateAndSetTitle_WedgeSignal_BoundsRetries(t *testing.T) {
 		// that's fine, keep going.
 	}
 
-	// Wait until the goroutine has exhausted its retry budget. With
-	// titleRetryBaseDelay = 1µs the whole 4-attempt storm completes in
-	// well under a millisecond of real sleeping. Poll for stability.
-	deadline := time.Now().Add(3 * time.Second)
-	var stable int
-	var lastCalls int32
-	for time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-		c := provider.calls.Load()
-		if c == lastCalls {
-			stable++
-			if stable >= 3 {
-				break
-			}
-		} else {
-			stable = 0
-			lastCalls = c
-		}
-	}
+	// Join the retry goroutine instead of polling for stability: with a 1µs
+	// base delay the whole 4-attempt storm finishes almost immediately.
+	job.Wait()
 
 	got := provider.calls.Load()
 	const maxAcceptable = int32(2)

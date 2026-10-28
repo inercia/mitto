@@ -72,13 +72,8 @@ func waitForTitleAttempts(t *testing.T, p *quiescenceTitleProvider, want int32) 
 // shared-process load shedding. Once that load clears, one retained pending job
 // must upgrade the fallback without requiring another user prompt.
 func TestGenerateAndSetTitle_BusyAttemptsRecoverAfterQuiescence(t *testing.T) {
-	origMax, origDelay := titleMaxRetries, titleRetryBaseDelay
-	titleMaxRetries = 3
-	titleRetryBaseDelay = time.Millisecond
-	t.Cleanup(func() {
-		titleMaxRetries = origMax
-		titleRetryBaseDelay = origDelay
-	})
+	retry := TitleRetryPolicy{MaxRetries: 3, BaseDelay: time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
 
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -94,7 +89,7 @@ func TestGenerateAndSetTitle_BusyAttemptsRecoverAfterQuiescence(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	provider := &quiescenceTitleProvider{attempted: make(chan int32, titleMaxRetries+2)}
+	provider := &quiescenceTitleProvider{attempted: make(chan int32, retry.MaxRetries+2)}
 	provider.busy.Store(true)
 	mgr := auxiliary.NewWorkspaceAuxiliaryManager(provider, nil)
 	completed := make(chan struct{}, 2)
@@ -102,16 +97,22 @@ func TestGenerateAndSetTitle_BusyAttemptsRecoverAfterQuiescence(t *testing.T) {
 	cfg := TitleGenerationConfig{
 		Store: store, SessionID: sessionID, Message: "Explain the title recovery bug",
 		WorkspaceUUID: "test-workspace", AuxiliaryManager: mgr,
+		Retry: &retry, Context: ctx,
 		OnTitleGenerated: func(string, string) {
 			callbacks.Add(1)
 			completed <- struct{}{}
 		},
 	}
 
-	GenerateAndSetTitle(cfg) // initial title attempt
+	job := GenerateAndSetTitle(cfg) // initial title attempt
 	waitForTitleAttempts(t, provider, 1)
-	GenerateAndSetTitle(cfg) // prompt-completion recovery attempt
-	waitForTitleAttempts(t, provider, int32(titleMaxRetries+1))
+	duplicate := GenerateAndSetTitle(cfg) // prompt-completion recovery attempt (coalesced)
+	waitForTitleAttempts(t, provider, int32(retry.MaxRetries+1))
+	t.Cleanup(func() {
+		cancel()
+		job.Wait()
+		duplicate.Wait()
+	})
 
 	provider.busy.Store(false) // quiescence arrives after the bounded retries; no new prompt arrives
 	select {
@@ -122,7 +123,7 @@ func TestGenerateAndSetTitle_BusyAttemptsRecoverAfterQuiescence(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond) // catch duplicate pending jobs
 
-	if got := provider.calls.Load(); got != int32(titleMaxRetries+2) {
+	if got := provider.calls.Load(); got != int32(retry.MaxRetries+2) {
 		t.Fatalf("expected bounded busy attempts plus one pending recovery; got %d attempts", got)
 	}
 	if got := callbacks.Load(); got != 1 {
@@ -142,13 +143,8 @@ func TestGenerateAndSetTitle_BusyAttemptsRecoverAfterQuiescence(t *testing.T) {
 // job must consume that edge instead of waiting for the next poll, where the process
 // is busy again.
 func TestGenerateAndSetTitle_ObservedIdleEdgeBeatsPolling(t *testing.T) {
-	origMax, origDelay := titleMaxRetries, titleRetryBaseDelay
-	titleMaxRetries = 3
-	titleRetryBaseDelay = 500 * time.Millisecond
-	t.Cleanup(func() {
-		titleMaxRetries = origMax
-		titleRetryBaseDelay = origDelay
-	})
+	retry := TitleRetryPolicy{MaxRetries: 3, BaseDelay: 500 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
 
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -165,17 +161,22 @@ func TestGenerateAndSetTitle_ObservedIdleEdgeBeatsPolling(t *testing.T) {
 	}
 
 	provider := &quiescenceTitleProvider{
-		attempted: make(chan int32, titleMaxRetries+2),
+		attempted: make(chan int32, retry.MaxRetries+2),
 		quiescent: make(chan struct{}),
 		waiting:   make(chan struct{}),
 	}
 	provider.busy.Store(true)
 	mgr := auxiliary.NewWorkspaceAuxiliaryManager(provider, nil)
 	completed := make(chan struct{}, 1)
-	GenerateAndSetTitle(TitleGenerationConfig{
+	job := GenerateAndSetTitle(TitleGenerationConfig{
 		Store: store, SessionID: sessionID, Message: "Explain sustained title starvation",
 		WorkspaceUUID: "test-workspace", AuxiliaryManager: mgr,
+		Retry: &retry, Context: ctx,
 		OnTitleGenerated: func(string, string) { completed <- struct{}{} },
+	})
+	t.Cleanup(func() {
+		cancel()
+		job.Wait()
 	})
 	waitForTitleAttempts(t, provider, 1)
 
