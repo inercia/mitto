@@ -100,6 +100,13 @@ export function PromptsMenu({
   const clampedIndex =
     flat.length === 0 ? -1 : Math.min(selectedIndex, flat.length - 1);
   const curModelName = currentModelName(modelOption);
+  // Announce the keyboard highlight without claiming it is the chosen prompt:
+  // the listbox/option pattern cannot host rows with their own controls, so the
+  // highlight is reported through a polite status region instead.
+  const highlighted =
+    clampedIndex >= 0 && flat[clampedIndex]
+      ? `${flat[clampedIndex].name}, ${clampedIndex + 1} of ${flat.length}`
+      : "";
   // Per-item loop override (mode "optional" only), keyed by prompt.name.
   const [loopOverrides, setLoopOverrides] = useState({});
 
@@ -127,8 +134,18 @@ export function PromptsMenu({
       modelOption,
       modelProfiles,
     );
+    // Accessible name carries the loop and chosen states so assistive tech can
+    // tell the chosen prompt apart from the keyboard highlight (which stays
+    // visual, see the status region below).
+    const itemLabel =
+      prompt.name +
+      (prompt.loop ? ", loop prompt" : "") +
+      (isChosen ? ", selected" : "");
     return html`
-      <li key=${keyPrefix + "-item-" + prompt.name}>
+      <li
+        key=${keyPrefix + "-item-" + prompt.name}
+        class="flex items-center gap-1 pr-3"
+      >
         <button
           type="button"
           onClick=${(e) => {
@@ -141,9 +158,10 @@ export function PromptsMenu({
             onSelect && onSelect(prompt, e, { asLoop });
           }}
           title=${prompt.description || prompt.name}
-          class="prompt-item picker-row w-full text-left text-mitto-text"
+          class="prompt-item picker-row flex-1 min-w-0 text-left text-mitto-text"
           style=${style}
-          aria-selected=${isChosen ? "true" : "false"}
+          aria-label=${itemLabel}
+          aria-current=${isChosen ? "true" : undefined}
           ref=${isKbSelected ? selectedItemRef : null}
         >
           ${shiftHeld
@@ -183,44 +201,6 @@ export function PromptsMenu({
             title="Loop prompt — sets the conversation to recurring mode"
             ><${LoopIcon} className="w-3 h-3"
           /></span>`}
-          ${loopToggle &&
-          (() => {
-            const mode = promptLoopMode(prompt);
-            if (mode === "none") return null;
-            if (mode === "optional") {
-              const on =
-                loopOverrides[prompt.name] !== undefined
-                  ? loopOverrides[prompt.name]
-                  : promptLoopDefaultOn(prompt);
-              return html`<input
-                type="checkbox"
-                class="checkbox checkbox-sm checkbox-success prompt-loop-checkbox shrink-0"
-                checked=${on}
-                title=${on
-                  ? "Loop: ON — click to disable recurring runs"
-                  : "Loop: OFF — click to run as recurring conversation"}
-                onClick=${(e) => e.stopPropagation()}
-                onChange=${(e) => {
-                  e.stopPropagation();
-                  setLoopOverrides((m) => ({
-                    ...m,
-                    [prompt.name]: e.target.checked,
-                  }));
-                }}
-              />`;
-            }
-            // mode === "always": checked, locked checkbox (checked + disabled)
-            // so it reads coherently next to the optional toggle above —
-            // same control, but permanently on and not changeable.
-            return html`<input
-              type="checkbox"
-              class="checkbox checkbox-sm checkbox-success prompt-loop-checkbox shrink-0"
-              checked=${true}
-              disabled
-              title="Always loop — this prompt always runs as a recurring conversation (cannot be changed)"
-              onClick=${(e) => e.stopPropagation()}
-            />`;
-          })()}
           ${overrideModel &&
           html`<span
             class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-mitto-accent-600/80 text-white/90 shrink-0"
@@ -253,33 +233,78 @@ export function PromptsMenu({
             />
           </svg>`}
         </button>
+        ${loopToggle &&
+        (() => {
+          const mode = promptLoopMode(prompt);
+          if (mode === "none") return null;
+          if (mode === "optional") {
+            const on =
+              loopOverrides[prompt.name] !== undefined
+                ? loopOverrides[prompt.name]
+                : promptLoopDefaultOn(prompt);
+            return html`<input
+              type="checkbox"
+              class="checkbox checkbox-sm checkbox-success prompt-loop-checkbox shrink-0"
+              checked=${on}
+              aria-label=${"Loop: " + prompt.name}
+              title=${on
+                ? "Loop: ON — click to disable recurring runs"
+                : "Loop: OFF — click to run as recurring conversation"}
+              onClick=${(e) => e.stopPropagation()}
+              onChange=${(e) => {
+                e.stopPropagation();
+                setLoopOverrides((m) => ({
+                  ...m,
+                  [prompt.name]: e.target.checked,
+                }));
+              }}
+            />`;
+          }
+          // mode === "always": checked, locked checkbox (checked + disabled)
+          // so it reads coherently next to the optional toggle above —
+          // same control, but permanently on and not changeable.
+          return html`<input
+            type="checkbox"
+            class="checkbox checkbox-sm checkbox-success prompt-loop-checkbox shrink-0"
+            checked=${true}
+            disabled
+            aria-label=${"Always loops: " + prompt.name}
+            title="Always loop — this prompt always runs as a recurring conversation (cannot be changed)"
+            onClick=${(e) => e.stopPropagation()}
+          />`;
+        })()}
       </li>
     `;
   };
 
   return html`
-    <${SearchableMenu}
-      items=${flat}
-      filterText=${filterText}
-      onFilterChange=${onFilterChange}
-      onFilterKeyDown=${onFilterKeyDown}
-      filterInputRef=${filterInputRef}
-      placeholder=${placeholder}
-      emptyText=${emptyText}
-      filterTestId=${filterTestId}
-      listTestId=${listTestId}
-      footer=${footer}
-    >
-      ${groups.map(
-        (g) => html`
-          <${Fragment} key=${keyPrefix + "-group-" + g.name}>
-            <li class="menu-title px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30">
-              ${g.name}
-            </li>
-            ${g.prompts.map(renderItem)}
-          </${Fragment}>
-        `,
-      )}
-    </${SearchableMenu}>
+    <${Fragment}>
+      <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        ${highlighted}
+      </div>
+      <${SearchableMenu}
+        items=${flat}
+        filterText=${filterText}
+        onFilterChange=${onFilterChange}
+        onFilterKeyDown=${onFilterKeyDown}
+        filterInputRef=${filterInputRef}
+        placeholder=${placeholder}
+        emptyText=${emptyText}
+        filterTestId=${filterTestId}
+        listTestId=${listTestId}
+        footer=${footer}
+      >
+        ${groups.map(
+          (g) => html`
+            <${Fragment} key=${keyPrefix + "-group-" + g.name}>
+              <li class="menu-title px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30">
+                ${g.name}
+              </li>
+              ${g.prompts.map(renderItem)}
+            </${Fragment}>
+          `,
+        )}
+      </${SearchableMenu}>
+    </${Fragment}>
   `;
 }

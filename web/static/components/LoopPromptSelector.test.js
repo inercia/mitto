@@ -33,7 +33,7 @@ if (process.env.MITTO_LOOP_PROMPT_SELECTOR_TEST_CHILD === "1") {
     await settle();
     let input = container.querySelector("input");
     expect(document.activeElement).toBe(input);
-    expect(container.querySelector('[aria-selected="true"]').textContent).toContain("Beta");
+    expect(container.querySelector('[aria-current="true"]').textContent).toContain("Beta");
     input.value = "description";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();

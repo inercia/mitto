@@ -38,8 +38,8 @@ if (process.env.MITTO_PROMPTS_MENU_TEST_CHILD === "1") {
     expect([...container.querySelectorAll(".menu-title")].map((el) => el.textContent.trim())).toEqual(["Work", "Other"]);
     expect(container.querySelectorAll(".menu-title button").length).toBe(0);
     expect(ref.current).toBe(rows()[0]);
-    expect(rows()[0].getAttribute("aria-selected")).toBe("false");
-    expect(rows()[1].getAttribute("aria-selected")).toBe("true");
+    expect(rows()[0].getAttribute("aria-current")).toBeNull();
+    expect(rows()[1].getAttribute("aria-current")).toBe("true");
     expect(rows()[1].querySelector('[fill-rule="evenodd"]')).not.toBeNull();
     expect(rows()[0].style.boxShadow).toContain("inset");
     expect(container.querySelector('[role="listbox"], [role="option"]')).toBeNull();
@@ -86,7 +86,7 @@ if (process.env.MITTO_PROMPTS_MENU_TEST_CHILD === "1") {
     const calls = [];
     const props = { loopToggle: true, onSelect: (...args) => calls.push(args) };
     mount(props);
-    const checkbox = rows()[0].querySelector("input");
+    const checkbox = rows()[0].closest("li").querySelector("input");
     expect(checkbox.disabled).toBe(false);
     checkbox.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     checkbox.checked = true;
@@ -95,13 +95,13 @@ if (process.env.MITTO_PROMPTS_MENU_TEST_CHILD === "1") {
     expect(calls).toHaveLength(0);
     mount({ ...props, filterText: "Zulu" });
     mount(props);
-    expect(rows()[0].querySelector("input").checked).toBe(true);
+    expect(rows()[0].closest("li").querySelector("input").checked).toBe(true);
     const event = new MouseEvent("click", { bubbles: true, shiftKey: true });
     rows()[0].dispatchEvent(event);
     expect(calls[0]).toEqual([prompts[1], event, { asLoop: true }]);
     expect(calls[0][1].shiftKey).toBe(true);
-    expect(rows()[2].querySelector("input").checked).toBe(true);
-    expect(rows()[2].querySelector("input").disabled).toBe(true);
+    expect(rows()[2].closest("li").querySelector("input").checked).toBe(true);
+    expect(rows()[2].closest("li").querySelector("input").disabled).toBe(true);
     rows()[1].click();
     expect(calls[1][2]).toEqual({ asLoop: undefined });
   });
@@ -122,21 +122,22 @@ if (process.env.MITTO_PROMPTS_MENU_TEST_CHILD === "1") {
     expect(controls[1].getAttribute("aria-label")).toBe("Always loops: Always");
     expect(controls[1].checked).toBe(true);
     expect(controls[1].disabled).toBe(true);
-    expect(rows()[0].getAttribute("aria-label")).toBe("Zulu, selected");
-    expect(rows()[1].getAttribute("aria-label")).toBe("Alpha, loop prompt");
+    expect(rows()[0].getAttribute("aria-label")).toBe("Alpha, loop prompt");
+    expect(rows()[1].getAttribute("aria-label")).toBe("Zulu, selected");
+    expect(rows()[2].getAttribute("aria-label")).toBe("Always, loop prompt");
   });
 
   // mitto-byq: chosen prompt and keyboard highlight are different states and
   // must be exposed through different, supported mechanisms.
   test("chosen prompt is aria-current while keyboard highlight stays visual", () => {
-    mount({ selectedName: "Zulu", selectedIndex: 1 });
+    mount({ selectedName: "Zulu", selectedIndex: 0 });
     expect(container.querySelectorAll("[aria-selected]")).toHaveLength(0);
     expect(
       rows().filter((row) => row.getAttribute("aria-current") === "true"),
     ).toHaveLength(1);
-    expect(rows()[0].getAttribute("aria-current")).toBe("true");
-    expect(rows()[1].getAttribute("aria-current")).toBeNull();
-    expect(rows()[1].style.boxShadow).toContain("inset");
+    expect(rows()[0].getAttribute("aria-current")).toBeNull();
+    expect(rows()[1].getAttribute("aria-current")).toBe("true");
+    expect(rows()[0].style.boxShadow).toContain("inset");
     expect(container.querySelector('[role="listbox"], [role="option"]')).toBeNull();
   });
 
@@ -149,7 +150,7 @@ if (process.env.MITTO_PROMPTS_MENU_TEST_CHILD === "1") {
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(status.getAttribute("aria-atomic")).toBe("true");
     expect(status.className).toContain("sr-only");
-    expect(status.textContent).toBe("Alpha, 2 of 3");
+    expect(status.textContent).toBe("Zulu, 2 of 3");
     mount({ selectedIndex: -1 });
     expect(container.querySelector('[role="status"]').textContent).toBe("");
     mount({});
