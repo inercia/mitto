@@ -1,7 +1,9 @@
 package acpproc
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1482,6 +1484,58 @@ func newUnresponsiveACPPeerConn() *acp.ClientSideConnection {
 	return acp.NewClientSideConnection(NewMultiplexClient(), reqW, respR)
 }
 
+// newRecordingACPPeerConn observes requests without answering them. Its request
+// channel is used only to prove a final admission stopped transport handoff.
+func newRecordingACPPeerConn() (*acp.ClientSideConnection, <-chan string) {
+	reqR, reqW := io.Pipe()
+	respR, _ := io.Pipe()
+	requests := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(reqR)
+		for scanner.Scan() {
+			requests <- scanner.Text()
+		}
+		close(requests)
+	}()
+	return acp.NewClientSideConnection(NewMultiplexClient(), reqW, respR), requests
+}
+
+// newRetryableSetModelPeer returns a connection whose first request gets a
+// retryable JSON-RPC error. This gives a deterministic between-attempts
+// publication point without changing production retry timing or adding hooks.
+func newRetryableSetModelPeer(t *testing.T) (*acp.ClientSideConnection, <-chan struct{}, <-chan string) {
+	t.Helper()
+	reqR, reqW := io.Pipe()
+	respR, respW := io.Pipe()
+	firstResponseWritten := make(chan struct{})
+	requests := make(chan string, 2)
+	go func() {
+		defer close(requests)
+		first := true
+		scanner := bufio.NewScanner(reqR)
+		for scanner.Scan() {
+			line := scanner.Text()
+			requests <- line
+			var request struct {
+				ID json.RawMessage `json:"id"`
+			}
+			if err := json.Unmarshal([]byte(line), &request); err != nil {
+				t.Errorf("decode ACP request: %v", err)
+				return
+			}
+			if first {
+				if _, err := fmt.Fprintf(respW, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"temporary timeout"}}`+"\n", request.ID); err != nil {
+					t.Errorf("write ACP retryable response: %v", err)
+					return
+				}
+				close(firstResponseWritten)
+				first = false
+			}
+		}
+	}()
+	return acp.NewClientSideConnection(NewMultiplexClient(), reqW, respR), firstResponseWritten, requests
+}
+
 // TestSetSessionModel_ColdAgentTimeout_TripsSaturation is a reproduction test
 // for mitto-qy0j: a cold/wedged agent that never answers session/set_model
 // produces the exact client-side -32603 "context deadline exceeded"
@@ -2639,6 +2693,40 @@ func TestResolveAuxiliaryModel_HiddenSelectorsRemainStrict(t *testing.T) {
 	}
 }
 
+func TestResolveAuxiliaryModelPolicyFailsClosedForMissingOrUnverifiableCatalog(t *testing.T) {
+	var policies config.HiddenModelPolicies
+	snapshot, err := policies.Prepare([]config.ACPServer{{Name: "server", HiddenModels: []string{"^hidden$"}}})
+	if err != nil || !policies.Publish(snapshot) {
+		t.Fatalf("publish policy: %v", err)
+	}
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+	m.HiddenModelPolicies = &policies
+
+	cases := []struct {
+		name string
+		raw  *conversation.SessionModelState
+	}{
+		{name: "missing catalog", raw: nil},
+		{name: "synthesized catalog", raw: &conversation.SessionModelState{Synthesized: true, CurrentModelId: "hidden"}},
+		{name: "missing current identity", raw: &conversation.SessionModelState{AvailableModels: []conversation.ModelInfo{{ModelId: "visible", Name: "Visible"}}}},
+		{name: "current identity absent from catalog", raw: &conversation.SessionModelState{CurrentModelId: "unknown", AvailableModels: []conversation.ModelInfo{{ModelId: "visible", Name: "Visible"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := cloneAuxiliaryModelState(tc.raw)
+			target, shouldSet, err := m.resolveAuxiliaryModel(nil, tc.raw, "server", "ws", "title")
+			var unavailable *mittoAcp.AuxiliaryModelUnavailableError
+			if !errors.As(err, &unavailable) || target != "" || shouldSet {
+				t.Fatalf("resolve = (%q, %t, %v), want fail-closed unavailable error", target, shouldSet, err)
+			}
+			if !reflect.DeepEqual(tc.raw, before) {
+				t.Fatal("fail-closed resolution rewrote catalog/current identity")
+			}
+		})
+	}
+}
+
 func TestAdmitAuxiliaryDispatch_RejectsPolicyPublishedAfterReconciliation(t *testing.T) {
 	var policies config.HiddenModelPolicies
 	initial, err := policies.Prepare([]config.ACPServer{{Name: "server"}})
@@ -2752,6 +2840,41 @@ func TestSetSessionModelPolicyPublishedWhileQueuedBlocks(t *testing.T) {
 	}
 }
 
+func TestSetSessionModelPolicyPublishedBetweenRetriesBlocks(t *testing.T) {
+	var policies config.HiddenModelPolicies
+	initial, err := policies.Prepare([]config.ACPServer{{Name: "server"}})
+	if err != nil || !policies.Publish(initial) {
+		t.Fatalf("publish initial policy: %v", err)
+	}
+	conn, firstResponseWritten, requests := newRetryableSetModelPeer(t)
+	p := &SharedACPProcess{
+		config:      SharedACPProcessConfig{ACPServer: "server", HiddenModelPolicies: &policies},
+		conn:        conn,
+		processDone: make(chan struct{}),
+		setModelSem: make(chan struct{}, 1),
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- p.SetSessionModel(context.Background(), "session-id", "selected-model") }()
+	<-firstResponseWritten // attempt one failed; retry two remains behind its backoff/admission.
+	next, err := policies.Prepare([]config.ACPServer{{Name: "server", HiddenModels: []string{"^selected-model$"}}})
+	if err != nil || !policies.Publish(next) {
+		t.Fatalf("publish hiding policy: %v", err)
+	}
+
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "hidden by current policy") {
+		t.Fatalf("SetSessionModel after retry-boundary publication = %v, want current-policy refusal", err)
+	}
+	if first := <-requests; !strings.Contains(first, "session/set_model") {
+		t.Fatalf("first request = %q, want session/set_model", first)
+	}
+	select {
+	case second := <-requests:
+		t.Fatalf("retry issued a forbidden second RPC: %q", second)
+	default:
+	}
+}
+
 func TestPromptWithAdmissionRefusesBeforeTransport(t *testing.T) {
 	p := &SharedACPProcess{conn: newUnresponsiveACPPeerConn()}
 	blocked := errors.New("dispatch blocked by policy")
@@ -2762,6 +2885,49 @@ func TestPromptWithAdmissionRefusesBeforeTransport(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("admission refusal took %v; the prompt RPC ran before admission", elapsed)
+	}
+}
+
+func TestAuxiliaryPromptPolicyPublishedAfterTurnLockBlocksBeforeRPC(t *testing.T) {
+	var policies config.HiddenModelPolicies
+	initial, err := policies.Prepare([]config.ACPServer{{Name: "server"}})
+	if err != nil || !policies.Publish(initial) {
+		t.Fatalf("publish initial policy: %v", err)
+	}
+	hidden, err := policies.Prepare([]config.ACPServer{{Name: "server", HiddenModels: []string{"^old$"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+	m.HiddenModelPolicies = &policies
+	// This resolver runs during final admission, after the caller has acquired
+	// its auxiliary turn lock and immediately before PromptWithAdmission's RPC.
+	m.ModelProfileResolver = func(string) *config.ModelProfile {
+		policies.Publish(hidden)
+		return &config.ModelProfile{Criteria: &config.ACPServerConstraint{MatchMode: "exact", Pattern: "old"}}
+	}
+	ws := &config.WorkspaceSettings{AuxiliaryModelProfile: "old-profile"}
+	m.WorkspaceConfigProvider = func(string) *config.WorkspaceSettings { return ws }
+	conn, requests := newRecordingACPPeerConn()
+	process := &SharedACPProcess{config: SharedACPProcessConfig{ACPServer: "server", WorkingDir: "/workspace"}, conn: conn}
+	state := &auxiliarySessionState{
+		workspaceUUID: "ws", configuredServer: "server", sessionFolder: "/workspace", sessionID: "aux-session",
+		process: process, processGeneration: process.Generation(), modelID: "old",
+		rawModels: &conversation.SessionModelState{CurrentModelId: "old", AvailableModels: []conversation.ModelInfo{{ModelId: "old", Name: "Old"}}},
+	}
+	_, err = process.PromptWithAdmission(context.Background(), state.sessionID, nil, m.auxiliaryPromptAdmission("ws", "title", process, state))
+	if err == nil {
+		t.Fatal("prompt accepted a policy published after turn-lock acquisition")
+	}
+	var unavailable *mittoAcp.AuxiliaryModelUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("prompt admission error = %v, want AuxiliaryModelUnavailableError", err)
+	}
+	select {
+	case request := <-requests:
+		t.Fatalf("policy-refused auxiliary prompt reached transport: %q", request)
+	default:
 	}
 }
 
