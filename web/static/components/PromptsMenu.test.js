@@ -105,6 +105,62 @@ if (process.env.MITTO_PROMPTS_MENU_TEST_CHILD === "1") {
     rows()[1].click();
     expect(calls[1][2]).toEqual({ asLoop: undefined });
   });
+
+  // mitto-byq: a prompt row must not nest interactive content inside its action
+  // button, and both controls must carry an explicit accessible name.
+  test("loop control is a sibling of the prompt action and both are named", () => {
+    mount({ loopToggle: true, selectedName: "Zulu" });
+    for (const row of rows()) {
+      expect(row.querySelector("input, button, a, select, textarea")).toBeNull();
+    }
+    const controls = [...container.querySelectorAll(".prompt-loop-checkbox")];
+    expect(controls).toHaveLength(2);
+    expect(controls[0].closest("button")).toBeNull();
+    expect(controls[0].closest("li")).not.toBeNull();
+    expect(controls[0].getAttribute("aria-label")).toBe("Loop: Alpha");
+    expect(controls[0].disabled).toBe(false);
+    expect(controls[1].getAttribute("aria-label")).toBe("Always loops: Always");
+    expect(controls[1].checked).toBe(true);
+    expect(controls[1].disabled).toBe(true);
+    expect(rows()[0].getAttribute("aria-label")).toBe("Zulu, selected");
+    expect(rows()[1].getAttribute("aria-label")).toBe("Alpha, loop prompt");
+  });
+
+  // mitto-byq: chosen prompt and keyboard highlight are different states and
+  // must be exposed through different, supported mechanisms.
+  test("chosen prompt is aria-current while keyboard highlight stays visual", () => {
+    mount({ selectedName: "Zulu", selectedIndex: 1 });
+    expect(container.querySelectorAll("[aria-selected]")).toHaveLength(0);
+    expect(
+      rows().filter((row) => row.getAttribute("aria-current") === "true"),
+    ).toHaveLength(1);
+    expect(rows()[0].getAttribute("aria-current")).toBe("true");
+    expect(rows()[1].getAttribute("aria-current")).toBeNull();
+    expect(rows()[1].style.boxShadow).toContain("inset");
+    expect(container.querySelector('[role="listbox"], [role="option"]')).toBeNull();
+  });
+
+  // mitto-byq: navigating the list must announce the highlighted prompt without
+  // announcing it as chosen.
+  test("highlighted prompt is announced by a polite status region", () => {
+    mount({ selectedIndex: 1 });
+    const status = container.querySelector('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.getAttribute("aria-atomic")).toBe("true");
+    expect(status.className).toContain("sr-only");
+    expect(status.textContent).toBe("Alpha, 2 of 3");
+    mount({ selectedIndex: -1 });
+    expect(container.querySelector('[role="status"]').textContent).toBe("");
+    mount({});
+    expect(container.querySelector('[role="status"]').textContent).toBe("");
+    mount({ selectedIndex: 99 });
+    expect(container.querySelector('[role="status"]').textContent).toBe(
+      "Always, 3 of 3",
+    );
+    mount({ selectedIndex: 0, filterText: "missing" });
+    expect(container.querySelector('[role="status"]').textContent).toBe("");
+  });
 } else {
   test("PromptsMenu mounted behavior runs in an isolated happy-dom process", () => {
     const result = spawnSync(process.execPath, ["test", fileURLToPath(import.meta.url)], { encoding: "utf8", env: { ...process.env, MITTO_PROMPTS_MENU_TEST_CHILD: "1" }, timeout: 30_000 });
