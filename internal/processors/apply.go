@@ -699,11 +699,20 @@ type Manager struct {
 	// the session directory). Injected as MemoryStateStore in unit tests.
 	stateStore StateStore
 
+	// pendingDispatchMu guards pendingDispatchStore below. The store is
+	// swapped at runtime by SetPendingDispatchStore while dispatch/flush
+	// goroutines spawned by earlier calls are still reading it — a resume or
+	// re-wire racing an in-flight FlushPendingDispatches trips the race
+	// detector with no happens-before edge between them. Every read goes
+	// through pendingDispatchStoreSnapshot().
+	pendingDispatchMu sync.RWMutex
 	// pendingDispatchStore persists prompt-mode batches that dispatchWithRetry
 	// could not deliver within its retry budget (mitto-3421), keyed by
 	// workspace rather than session — see FilePendingDispatchStore for why a
 	// session-scoped location is not durable enough for this. Defaults to
 	// FilePendingDispatchStore. Injected with a temp-dir BaseDir in unit tests.
+	// Always access via pendingDispatchStoreSnapshot(), never directly
+	// (guarded by pendingDispatchMu).
 	pendingDispatchStore PendingDispatchStore
 
 	// lateDeliveryFunc is an optional callback invoked by
@@ -766,7 +775,20 @@ func (m *Manager) SetStateStore(s StateStore) {
 // (mitto-3421). Primarily used in unit tests to inject a
 // FilePendingDispatchStore pointed at a temp directory.
 func (m *Manager) SetPendingDispatchStore(s PendingDispatchStore) {
+	m.pendingDispatchMu.Lock()
 	m.pendingDispatchStore = s
+	m.pendingDispatchMu.Unlock()
+}
+
+// pendingDispatchStoreSnapshot returns a consistent snapshot of
+// pendingDispatchStore. Every reader — including the CloneWith* constructors
+// and FlushPendingDispatches — must go through this accessor instead of
+// touching m.pendingDispatchStore directly, since SetPendingDispatchStore
+// mutates it while earlier dispatch/flush goroutines are still running.
+func (m *Manager) pendingDispatchStoreSnapshot() PendingDispatchStore {
+	m.pendingDispatchMu.RLock()
+	defer m.pendingDispatchMu.RUnlock()
+	return m.pendingDispatchStore
 }
 
 // SetLateDeliveryFunc sets the callback invoked when FlushPendingDispatches
@@ -907,7 +929,7 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 		totalActivations:        activations,
 		lastActivationAt:        lastAt,
 		stateStore:              m.stateStore,
-		pendingDispatchStore:    m.pendingDispatchStore,
+		pendingDispatchStore:    m.pendingDispatchStoreSnapshot(),
 		clock:                   m.clock,
 		runRecorder:             m.runRecorder,
 	}
@@ -946,7 +968,7 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 		totalActivations:        activations,
 		lastActivationAt:        lastAt,
 		stateStore:              m.stateStore,
-		pendingDispatchStore:    m.pendingDispatchStore,
+		pendingDispatchStore:    m.pendingDispatchStoreSnapshot(),
 		clock:                   m.clock,
 		runRecorder:             m.runRecorder,
 		loadErrors:              append([]ProcessorLoadError(nil), m.loadErrors...),
@@ -1049,7 +1071,7 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 		totalActivations:        activations,
 		lastActivationAt:        lastAt,
 		stateStore:              m.stateStore,
-		pendingDispatchStore:    m.pendingDispatchStore,
+		pendingDispatchStore:    m.pendingDispatchStoreSnapshot(),
 		clock:                   m.clock,
 		runRecorder:             m.runRecorder,
 		loadErrors:              m.loadErrors, // read-only; safe to share
@@ -2884,18 +2906,19 @@ func clearAuthDispatchBlock(workspaceUUID string) {
 // persistAuthCooldownDispatch retains new or already-claimed work without
 // refreshing SavedAt, so pendingDispatchMaxAge remains the upper bound.
 func (m *Manager) persistAuthCooldownDispatch(entry PendingDispatchEntry, trackedPersisted bool, lastError string) error {
-	if m.pendingDispatchStore == nil || entry.WorkspaceUUID == "" {
+	store := m.pendingDispatchStoreSnapshot()
+	if store == nil || entry.WorkspaceUUID == "" {
 		return errors.New("pending-dispatch store is unavailable")
 	}
 	entry.LastError = lastError
 	if trackedPersisted {
-		dropped, err := m.pendingDispatchStore.Requeue(entry.WorkspaceUUID, []PendingDispatchEntry{entry})
+		dropped, err := store.Requeue(entry.WorkspaceUUID, []PendingDispatchEntry{entry})
 		if err == nil {
 			m.logPendingDispatchDrops(entry.WorkspaceUUID, dropped)
 		}
 		return err
 	}
-	result, err := m.pendingDispatchStore.Append(entry)
+	result, err := store.Append(entry)
 	if err == nil {
 		m.logPendingDispatchWatermark(entry.WorkspaceUUID, result.Depth)
 		m.logPendingDispatchDrops(entry.WorkspaceUUID, result.Dropped)
@@ -3178,13 +3201,18 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		Attempts:       1,
 	}
 
+	// One snapshot for the whole dispatch: the store is swapped by
+	// SetPendingDispatchStore, so re-reading the field per branch could mix
+	// two different stores within a single attempt.
+	store := m.pendingDispatchStoreSnapshot()
+
 	// Completion-aware dispatches are durable before the first RPC. A crash at
 	// any point after this write leaves a claimed entry that a restarted process
 	// can recover; only terminal success removes it.
 	_, promptCompletionFn := m.promptFuncSnapshot()
 	trackedPersisted := false
-	if promptCompletionFn != nil && m.pendingDispatchStore != nil && workspaceUUID != "" {
-		appendResult, saveErr := m.pendingDispatchStore.AppendClaimed(entry)
+	if promptCompletionFn != nil && store != nil && workspaceUUID != "" {
+		appendResult, saveErr := store.AppendClaimed(entry)
 		if saveErr != nil {
 			if m.logger != nil {
 				m.logger.Error(failLog+"; failed to persist batch before execution, dispatch aborted",
@@ -3217,7 +3245,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	if deferrableWhenBusy && m.shouldDeferDispatchFunc != nil && m.shouldDeferDispatchFunc(workspaceUUID) {
 		deferred := false
 		if trackedPersisted {
-			dropped, saveErr := m.pendingDispatchStore.Requeue(workspaceUUID, []PendingDispatchEntry{entry})
+			dropped, saveErr := store.Requeue(workspaceUUID, []PendingDispatchEntry{entry})
 			if saveErr != nil {
 				if m.logger != nil {
 					m.logger.Error(failLog+"; failed to release durable claim for planned deferral",
@@ -3227,8 +3255,8 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 				deferred = true
 				m.logPendingDispatchDrops(workspaceUUID, dropped)
 			}
-		} else if m.pendingDispatchStore != nil && workspaceUUID != "" {
-			appendResult, saveErr := m.pendingDispatchStore.Append(entry)
+		} else if store != nil && workspaceUUID != "" {
+			appendResult, saveErr := store.Append(entry)
 			if saveErr != nil {
 				if m.logger != nil {
 					m.logger.Error(failLog+"; failed to persist deferred batch, work is lost",
@@ -3392,7 +3420,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		entry.LastError = lastErr.Error()
 	}
 	if trackedPersisted {
-		dropped, saveErr := m.pendingDispatchStore.Requeue(workspaceUUID, []PendingDispatchEntry{entry})
+		dropped, saveErr := store.Requeue(workspaceUUID, []PendingDispatchEntry{entry})
 		if saveErr != nil {
 			if m.logger != nil {
 				m.logger.Error(failLog+"; failed to release durable claim for retry",
@@ -3402,8 +3430,8 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 			persisted = true
 			m.logPendingDispatchDrops(workspaceUUID, dropped)
 		}
-	} else if m.pendingDispatchStore != nil && workspaceUUID != "" {
-		appendResult, saveErr := m.pendingDispatchStore.Append(entry)
+	} else if store != nil && workspaceUUID != "" {
+		appendResult, saveErr := store.Append(entry)
 		if saveErr != nil {
 			if m.logger != nil {
 				m.logger.Error(failLog+"; failed to persist undelivered batch, work is lost",
@@ -3440,7 +3468,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 				"waited", waited,
 				"error", lastErr,
 			)
-		} else if m.pendingDispatchStore == nil || workspaceUUID == "" {
+		} else if store == nil || workspaceUUID == "" {
 			m.logger.Error(failLog+"; batch not persisted, work is lost",
 				"name", name,
 				"attempts", totalAttempts,
@@ -3475,8 +3503,8 @@ func (m *Manager) logPendingDispatchDrops(workspaceUUID string, dropped []Pendin
 	// Dead-letter instead of permanently discarding — mitto-6ys1: capacity
 	// eviction must not silently destroy operator-visible work. Best-effort:
 	// a dead-letter write failure only logs, it never re-blocks eviction.
-	if m.pendingDispatchStore != nil {
-		if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, dropped, "dropped at capacity"); dlErr != nil && m.logger != nil {
+	if store := m.pendingDispatchStoreSnapshot(); store != nil {
+		if dlErr := store.DeadLetter(workspaceUUID, dropped, "dropped at capacity"); dlErr != nil && m.logger != nil {
 			m.logger.Error("pending-dispatch spool: failed to dead-letter capacity-evicted entries",
 				"workspace_uuid", workspaceUUID, "error", dlErr)
 		}
@@ -3497,9 +3525,10 @@ func (m *Manager) logPendingDispatchWatermark(workspaceUUID string, depth int) {
 }
 
 func (m *Manager) acknowledgeCompletedDispatch(entry PendingDispatchEntry) bool {
+	store := m.pendingDispatchStoreSnapshot()
 	var ackErr error
 	for attempt := 1; attempt <= pendingDispatchAckMaxAttempts; attempt++ {
-		ackErr = m.pendingDispatchStore.Acknowledge(entry.WorkspaceUUID, []string{entry.ID})
+		ackErr = store.Acknowledge(entry.WorkspaceUUID, []string{entry.ID})
 		if ackErr == nil {
 			return true
 		}
@@ -3692,7 +3721,15 @@ func (m *Manager) runDispatchRetryLoopTracked(ctx context.Context, workspaceUUID
 // one or more entries are delivered, lateDeliveryFunc (if set) is invoked once
 // with all delivered names.
 func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID string) {
-	if m == nil || m.pendingDispatchStore == nil || !m.hasPromptExecutor() || workspaceUUID == "" {
+	if m == nil {
+		return
+	}
+	// One snapshot for the whole flush pass: the store is swapped by
+	// SetPendingDispatchStore while an earlier flush goroutine may still be
+	// running, and a pass that mixed two stores could claim from one and
+	// dead-letter into another.
+	store := m.pendingDispatchStoreSnapshot()
+	if store == nil || !m.hasPromptExecutor() || workspaceUUID == "" {
 		return
 	}
 	if block, blocked := authDispatchBlocked(workspaceUUID); blocked {
@@ -3707,7 +3744,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 	// they've cooled down. ReplayDeadLetters merges eligible entries directly
 	// back into the main spool, so Claim() below picks them up alongside any
 	// freshly-appended entries in the same flush pass.
-	if replayed, replayErr := m.pendingDispatchStore.ReplayDeadLetters(workspaceUUID, deadLetterReplayCooldown); replayErr != nil {
+	if replayed, replayErr := store.ReplayDeadLetters(workspaceUUID, deadLetterReplayCooldown); replayErr != nil {
 		if m.logger != nil {
 			m.logger.Warn("pending-dispatch flush: failed to replay dead letters",
 				"workspace_uuid", workspaceUUID, "error", replayErr)
@@ -3721,7 +3758,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 			"workspace_uuid", workspaceUUID, "count", len(replayed), "names", names)
 	}
 
-	claim, err := m.pendingDispatchStore.Claim(workspaceUUID)
+	claim, err := store.Claim(workspaceUUID)
 	if err != nil {
 		if m.logger != nil {
 			m.logger.Warn("pending-dispatch flush: failed to claim spool",
@@ -3751,7 +3788,7 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 		// Claim() already wrote back only the fresh entries, so claim.Expired
 		// is no longer present in the live spool — this is additive, not a
 		// double-removal.
-		if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, claim.Expired, "expired (max age exceeded)"); dlErr != nil && m.logger != nil {
+		if dlErr := store.DeadLetter(workspaceUUID, claim.Expired, "expired (max age exceeded)"); dlErr != nil && m.logger != nil {
 			m.logger.Warn("pending-dispatch flush: failed to dead-letter expired entries",
 				"workspace_uuid", workspaceUUID, "error", dlErr)
 		}
@@ -3827,7 +3864,7 @@ flushEntries:
 			}
 			// mitto-6ys1: dead-letter instead of permanently discarding so the
 			// batch is not silently lost.
-			if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, []PendingDispatchEntry{entry}, "exceeded max attempts"); dlErr != nil && m.logger != nil {
+			if dlErr := store.DeadLetter(workspaceUUID, []PendingDispatchEntry{entry}, "exceeded max attempts"); dlErr != nil && m.logger != nil {
 				m.logger.Error("pending-dispatch flush: failed to dead-letter dropped entry; retaining pending copy",
 					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", dlErr)
 			}
@@ -3987,7 +4024,7 @@ flushEntries:
 			}
 			// mitto-6ys1: dead-letter instead of permanently discarding so the
 			// batch is not silently lost.
-			if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, []PendingDispatchEntry{entry}, lastErr.Error()); dlErr != nil && m.logger != nil {
+			if dlErr := store.DeadLetter(workspaceUUID, []PendingDispatchEntry{entry}, lastErr.Error()); dlErr != nil && m.logger != nil {
 				m.logger.Error("pending-dispatch flush: failed to dead-letter terminally failed entry; retaining pending copy",
 					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", dlErr)
 			}
@@ -3997,7 +4034,7 @@ flushEntries:
 	}
 
 	if len(requeue) > 0 {
-		dropped, requeueErr := m.pendingDispatchStore.Requeue(workspaceUUID, requeue)
+		dropped, requeueErr := store.Requeue(workspaceUUID, requeue)
 		if requeueErr != nil {
 			if m.logger != nil {
 				IDs := make([]string, 0, len(requeue))
@@ -4033,7 +4070,7 @@ flushEntries:
 			}
 			// mitto-6ys1: dead-letter instead of permanently discarding so
 			// capacity eviction does not silently destroy operator-visible work.
-			if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, dropped, "dropped at capacity"); dlErr != nil && m.logger != nil {
+			if dlErr := store.DeadLetter(workspaceUUID, dropped, "dropped at capacity"); dlErr != nil && m.logger != nil {
 				m.logger.Error("pending-dispatch flush: failed to dead-letter capacity-evicted entries",
 					"workspace_uuid", workspaceUUID, "error", dlErr)
 			}
