@@ -22,6 +22,7 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/modelcache"
+	"github.com/inercia/mitto/internal/rememberedargs"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
@@ -485,6 +486,11 @@ type Deps struct {
 	// when nothing is remembered or when either identifier is empty. May be
 	// nil; the GET handler treats that as "conversation scope disabled".
 	GetRememberedConversationArgs func(sessionID, promptName string) (map[string]string, error)
+
+	// ConversationResponses holds the per-conversation tri-state "Remember
+	// responses" state (unset / enabled snapshot / disabled tombstone). Nil
+	// disables the explicit control; legacy remember:* behavior still applies.
+	ConversationResponses *rememberedargs.ConversationResponses
 
 	// ValidateInstanceBearer reports whether r carries a valid
 	// "Authorization: Bearer <token>" matching the CURRENT

@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/inercia/mitto/internal/prompts"
+	"github.com/inercia/mitto/internal/rememberedargs"
 )
 
 // HandleRememberedArgsGET handles
@@ -58,30 +58,35 @@ func (h *Handlers) HandleRememberedArgsGET(w http.ResponseWriter, r *http.Reques
 		writeJSONOK(w, empty)
 		return
 	}
-	all := h.deps.GetWorkspacePromptsAll(workingDir)
-	rememberScope := map[string]string{} // arg name -> remember scope
-	found := false
-	for _, p := range all {
-		if !strings.EqualFold(p.Name, promptName) {
-			continue
-		}
-		found = true
-		for _, param := range p.Parameters {
-			switch param.Remember {
-			case prompts.RememberFolder, prompts.RememberConversation:
-				rememberScope[param.Name] = param.Remember
-			}
-		}
-		break
+	target := h.lookupWorkspacePrompt(workingDir, promptName)
+	if target == nil {
+		writeJSONOK(w, empty)
+		return
 	}
-	if !found || len(rememberScope) == 0 {
+	rememberScope := map[string]string{} // arg name -> remember scope
+	for _, param := range target.Parameters {
+		switch param.Remember {
+		case prompts.RememberFolder, prompts.RememberConversation:
+			rememberScope[param.Name] = param.Remember
+		}
+	}
+
+	// An explicit per-conversation decision overrides the legacy fallbacks:
+	// disabled hides every remembered value, enabled returns the submitted
+	// snapshot on top of the folder values (snapshot wins).
+	state := h.loadConversationResponses(sessionID, ws.UUID, target.Name)
+	if state.State == rememberedargs.ResponsesDisabled {
+		writeJSONOK(w, map[string]interface{}{"arguments": map[string]string{}, "remember_responses": false})
+		return
+	}
+	if len(rememberScope) == 0 && state.State != rememberedargs.ResponsesEnabled {
 		writeJSONOK(w, empty)
 		return
 	}
 
 	// Fetch the folder-scope snapshot and filter to declared remember args.
 	filtered := make(map[string]string, len(rememberScope))
-	if h.deps.GetRememberedArgs != nil {
+	if len(rememberScope) > 0 && h.deps.GetRememberedArgs != nil {
 		stored, err := h.deps.GetRememberedArgs(ws.UUID, promptName)
 		if err != nil {
 			if h.deps.Logger != nil {
@@ -103,6 +108,16 @@ func (h *Handlers) HandleRememberedArgsGET(w http.ResponseWriter, r *http.Reques
 	// Fetch the conversation-scope snapshot (when session_id is provided) and
 	// overlay on top of folder-scope values. Conversation wins on collision
 	// (mitto-47y.6.2).
+	if state.State == rememberedargs.ResponsesEnabled {
+		declared := responsesDeclaredKeys(target.Parameters)
+		for k, v := range state.Arguments {
+			if declared[k] {
+				filtered[k] = v
+			}
+		}
+		writeJSONOK(w, map[string]interface{}{"arguments": filtered, "remember_responses": true})
+		return
+	}
 	if sessionID != "" && h.deps.GetRememberedConversationArgs != nil {
 		convStored, err := h.deps.GetRememberedConversationArgs(sessionID, promptName)
 		if err != nil {

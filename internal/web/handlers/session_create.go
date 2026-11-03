@@ -23,6 +23,7 @@ type SessionCreateRequest struct {
 	OriginPromptName  string            `json:"origin_prompt_name,omitempty"`  // Optional: name of the prompt that originated this conversation
 	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
 	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: Go-template .Args values for the initial prompt
+	RememberResponses *bool             `json:"remember_responses,omitempty"`  // Optional: explicit per-conversation "Remember responses" choice for the initial prompt
 }
 
 // HandleCreateSession handles POST /api/sessions
@@ -386,6 +387,14 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// dispatch happens via the normal TryProcessQueuedMessage path.
 	if req.InitialPromptName != "" {
 		h.seedQueueWithNamedPrompt(bs, bs.GetSessionID(), req.InitialPromptName, req.Arguments)
+		if req.RememberResponses != nil {
+			if err := h.applyRememberResponses(bs.GetSessionID(), bs, req.InitialPromptName, req.Arguments, *req.RememberResponses); err != nil && h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to persist remembered responses for new session",
+					"session_id", bs.GetSessionID(),
+					"prompt_name", req.InitialPromptName,
+					"error", err)
+			}
+		}
 	}
 
 	// Broadcast session creation to all global events clients

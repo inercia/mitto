@@ -351,6 +351,10 @@ type Server struct {
 	// helper failed to resolve at startup; callers treat that as inert.
 	rememberedArgs *rememberedargs.Store
 
+	// conversationResponses persists the per-conversation tri-state "Remember
+	// responses" state in each session folder (see rememberedargs).
+	conversationResponses *rememberedargs.ConversationResponses
+
 	// Dashboard time-series stats subsystem (mitto-a86b). statsStore is the
 	// underlying persistence (SQLite in production, Noop when disabled or
 	// when Open fails during startup); statsAggregator batches live events
@@ -1285,11 +1289,13 @@ func NewServer(config Config) (*Server, error) {
 		}
 		s.rememberedArgs = rememberedargs.NewStore("")
 	}
-	if raConvDir, err := appdir.RememberedArgsConversationDir(); err == nil {
+	raConvDir, err := appdir.RememberedArgsConversationDir()
+	if err == nil {
 		s.rememberedArgs.WithConversationBaseDir(raConvDir)
 	} else if logger != nil {
 		logger.Warn("Failed to resolve remembered-args-conversation dir; conversation scope disabled", "error", err)
 	}
+	s.conversationResponses = rememberedargs.NewConversationResponses(s.store, raConvDir)
 
 	// Bound concurrent interactive ResumeSession calls issued from the
 	// cold-start WebSocket fan-out (mitto-54k.1). Config knob mirrors the
@@ -1915,6 +1921,7 @@ func NewServer(config Config) (*Server, error) {
 			}
 			return s.rememberedArgs.GetConversation(sessionID, promptName)
 		},
+		ConversationResponses: s.conversationResponses,
 	})
 
 	// Auto-unarchive recovery: retry unarchiving loop conversations archived due

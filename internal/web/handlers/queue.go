@@ -22,6 +22,9 @@ type QueueAddRequest struct {
 	ScheduledTime *string           `json:"scheduled_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
 	Arguments     map[string]string `json:"arguments,omitempty"`      // Optional: values for Go-template .Args placeholders applied when sent
 	PromptName    string            `json:"prompt_name,omitempty"`    // Optional: name of a workspace prompt to send by name (resolved at dispatch)
+	// RememberResponses is the explicit per-conversation "Remember responses"
+	// choice for PromptName. Nil keeps the legacy remember:* behavior.
+	RememberResponses *bool `json:"remember_responses,omitempty"`
 }
 
 // QueueMoveRequest represents a request to move a message in the queue.
@@ -214,6 +217,16 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 	// prompt dialog in this workspace/session pre-fills them (mitto-x8v,
 	// mitto-47y.6.2). Best-effort: any failure is logged and does not affect
 	// the enqueue.
+	if req.RememberResponses != nil && req.PromptName != "" {
+		if bs := h.sessionForQueue(sessionID); bs != nil {
+			if err := h.applyRememberResponses(sessionID, bs, req.PromptName, req.Arguments, *req.RememberResponses); err != nil && h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to persist remembered responses",
+					"session_id", sessionID,
+					"prompt_name", req.PromptName,
+					"error", err)
+			}
+		}
+	}
 	h.rememberScopedArgsForQueueAdd(sessionID, req.PromptName, req.Arguments)
 
 	// Enqueue title generation if enabled (skip for named-prompt items — the prompt name is the label)
@@ -260,10 +273,7 @@ func (h *Handlers) rememberScopedArgsForQueueAdd(sessionID, promptName string, a
 	if promptName == "" || len(args) == 0 {
 		return
 	}
-	if h.deps.SessionManager == nil {
-		return
-	}
-	bs := h.deps.SessionManager.GetSession(sessionID)
+	bs := h.sessionForQueue(sessionID)
 	if bs == nil {
 		return
 	}
@@ -272,17 +282,13 @@ func (h *Handlers) rememberScopedArgsForQueueAdd(sessionID, promptName string, a
 	if workingDir == "" {
 		return
 	}
+	if h.conversationResponsesDisabled(sessionID, workspaceUUID, promptName) {
+		return
+	}
 	if h.deps.GetWorkspacePromptsAll == nil {
 		return
 	}
-	all := h.deps.GetWorkspacePromptsAll(workingDir)
-	var target *config.WebPrompt
-	for i := range all {
-		if strings.EqualFold(all[i].Name, promptName) {
-			target = &all[i]
-			break
-		}
-	}
+	target := h.lookupWorkspacePrompt(workingDir, promptName)
 	if target == nil {
 		return
 	}
@@ -320,18 +326,21 @@ func (h *Handlers) rememberScopedArgsForQueueAdd(sessionID, promptName string, a
 		if len(innerArgs) == 0 {
 			continue
 		}
-		var inner *config.WebPrompt
-		for i := range all {
-			if strings.EqualFold(all[i].Name, innerName) {
-				inner = &all[i]
-				break
-			}
-		}
+		inner := h.lookupWorkspacePrompt(workingDir, innerName)
 		if inner == nil {
 			continue
 		}
 		h.persistScopedArgs(sessionID, workspaceUUID, promptName, inner.Parameters, innerArgs, inner.Name, p.Name)
 	}
+}
+
+// sessionForQueue returns the live background session for sessionID, or nil
+// when the session manager is not wired or the session is not active.
+func (h *Handlers) sessionForQueue(sessionID string) *conversation.BackgroundSession {
+	if h.deps.SessionManager == nil {
+		return nil
+	}
+	return h.deps.SessionManager.GetSession(sessionID)
 }
 
 // persistScopedArgs walks the given params, groups source values by their
