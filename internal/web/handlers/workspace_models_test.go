@@ -373,6 +373,123 @@ func TestHandleWorkspaceModels_ExplicitEmptyDoesNotResurrectProfilesOrHiddenOver
 	}
 }
 
+// fetchUnionModels extends the policy harness with live workspace-level
+// hidden-model rules (the helper above covers the agent level only).
+func fetchUnionModels(t *testing.T, record []modelcache.Model, agentHidden, wsHidden []string, overrides config.ModelOverrides) WorkspaceModelsResponse {
+	t.Helper()
+	cache, err := modelcache.New(filepath.Join(t.TempDir(), "model-cache.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record != nil {
+		if err := cache.Record(modelcache.Observation{Server: "agent-a", WorkingDir: "/workspace-a", Complete: true, Models: record}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{{
+		UUID:           "workspace-a",
+		WorkingDir:     "/workspace-a",
+		ACPServer:      "agent-a",
+		HiddenModels:   wsHidden,
+		ModelOverrides: overrides,
+	}})
+	sm.SetMittoConfig(&config.Config{ACPServers: []config.ACPServer{{Name: "agent-a", HiddenModels: agentHidden}}})
+	h := New(Deps{SessionManager: sm, ModelCache: cache})
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/workspace-a/models", nil)
+	req.SetPathValue("uuid", "workspace-a")
+	w := httptest.NewRecorder()
+	h.HandleWorkspaceModels(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var resp WorkspaceModelsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestHandleWorkspaceModels_UnionAgentAndWorkspaceRules(t *testing.T) {
+	raw := []modelcache.Model{{ID: "model-a", Name: "A"}, {ID: "model-b", Name: "B"}, {ID: "model-c", Name: "C"}}
+
+	t.Run("disjoint levels hide both", func(t *testing.T) {
+		r := fetchUnionModels(t, raw[:2], []string{"^model-a$"}, []string{"^model-b$"}, nil)
+		if r.CatalogState != "policy_empty" || len(r.Models) != 0 || r.HiddenCount != 2 {
+			t.Fatalf("unexpected: %+v", r)
+		}
+	})
+	t.Run("union leaves only the complement model", func(t *testing.T) {
+		r := fetchUnionModels(t, raw, []string{"^model-a$"}, []string{"^model-b$"}, nil)
+		if len(r.Models) != 1 || r.Models[0].ID != "model-c" || r.HiddenCount != 2 || r.CatalogState != "available" {
+			t.Fatalf("unexpected: %+v", r)
+		}
+	})
+	t.Run("workspace-only rules filter", func(t *testing.T) {
+		r := fetchUnionModels(t, raw, nil, []string{"MODEL-B"}, nil)
+		if r.CatalogState != "available" || len(r.Models) != 2 || r.HiddenCount != 1 {
+			t.Fatalf("unexpected: %+v", r)
+		}
+		for _, m := range r.Models {
+			if m.ID == "model-b" {
+				t.Fatal("workspace-hidden model leaked (case-insensitive)")
+			}
+		}
+	})
+	t.Run("invalid workspace rule fails closed", func(t *testing.T) {
+		r := fetchUnionModels(t, raw, nil, []string{"("}, nil)
+		if r.CatalogState != "policy_empty" || len(r.Models) != 0 || r.HiddenCount != 3 {
+			t.Fatalf("unexpected: %+v", r)
+		}
+	})
+	t.Run("invalid agent rule fails closed", func(t *testing.T) {
+		r := fetchUnionModels(t, raw, []string{"("}, nil, nil)
+		if r.CatalogState != "policy_empty" || len(r.Models) != 0 || r.HiddenCount != 3 {
+			t.Fatalf("unexpected: %+v", r)
+		}
+	})
+	t.Run("no rules keeps all models", func(t *testing.T) {
+		r := fetchUnionModels(t, raw, nil, nil, nil)
+		if r.CatalogState != "available" || len(r.Models) != 3 || r.HiddenCount != 0 {
+			t.Fatalf("unexpected: %+v", r)
+		}
+	})
+}
+
+func TestHandleWorkspaceModels_UnionSavedOverrides(t *testing.T) {
+	raw := []modelcache.Model{{ID: "model-a", Name: "A"}, {ID: "model-b", Name: "B"}}
+	ov := config.ModelOverrides{
+		{ACPServer: "agent-a", Tag: "x", ModelID: "model-a"},
+		{ACPServer: "agent-a", Tag: "y", ModelID: "gone"},
+	}
+
+	t.Run("workspace-hidden override surfaces", func(t *testing.T) {
+		r := fetchUnionModels(t, raw, nil, []string{"^model-a$"}, ov)
+		if len(r.HiddenSavedIDs) != 1 || r.HiddenSavedIDs[0] != "model-a" {
+			t.Fatalf("hidden saved: %+v", r.HiddenSavedIDs)
+		}
+		if len(r.UnavailableSavedIDs) != 1 || r.UnavailableSavedIDs[0] != "gone" {
+			t.Fatalf("unavailable saved: %+v", r.UnavailableSavedIDs)
+		}
+	})
+	t.Run("agent-hidden override surfaces", func(t *testing.T) {
+		r := fetchUnionModels(t, raw, []string{"^model-a$"}, nil, ov)
+		if len(r.HiddenSavedIDs) != 1 || r.HiddenSavedIDs[0] != "model-a" {
+			t.Fatalf("hidden saved: %+v", r.HiddenSavedIDs)
+		}
+	})
+	t.Run("duplicate override rows dedupe", func(t *testing.T) {
+		dup := config.ModelOverrides{
+			{ACPServer: "agent-a", Tag: "x", ModelID: "model-a"},
+			{ACPServer: "agent-a", Tag: "y", ModelID: "model-a"},
+		}
+		r := fetchUnionModels(t, raw, []string{"^model-a$"}, nil, dup)
+		if len(r.HiddenSavedIDs) != 1 {
+			t.Fatalf("expected deduped hidden saved, got: %+v", r.HiddenSavedIDs)
+		}
+	})
+}
+
 func TestHandleWorkspaceModels_ScopeEditStopsMatchingOldRecord(t *testing.T) {
 	cases := []struct {
 		name       string

@@ -74,6 +74,33 @@ func CompileHiddenModels(server string, rules []string) (*HiddenModelPolicy, err
 	return p, nil
 }
 
+// AllMatchesPolicy returns a policy that hides every model ID or name. It is
+// the fail-closed sentinel used when a compile step fails at runtime.
+func AllMatchesPolicy(server string) *HiddenModelPolicy {
+	return &HiddenModelPolicy{
+		server:   server,
+		patterns: []*regexp.Regexp{regexp.MustCompile("(?i).*")},
+	}
+}
+
+// CombineAgentWorkspacePolicies unions the agent-level policy with rules
+// compiled from workspace settings. The workspace rules are normalized and
+// compiled here; an agent policy is always expected to be pre-compiled (it is
+// validated when it is published), so workspace rules are the only runtime
+// fail-closed source.
+func CombineAgentWorkspacePolicies(server string, agent *HiddenModelPolicy, workspaceRules []string) (*HiddenModelPolicy, error) {
+	wsPolicy, err := CompileHiddenModels(server, NormalizeHiddenModels(workspaceRules))
+	if err != nil {
+		// Fail closed: a runtime-invalid workspace rule hides everything.
+		return AllMatchesPolicy(server), fmt.Errorf("workspace %q hidden models: %w", server, err)
+	}
+	// An empty workspace rule set is equivalent to no workspace policy.
+	if wsPolicy != nil && len(wsPolicy.patterns) == 0 {
+		wsPolicy = nil
+	}
+	return MergeHiddenModelPolicies(agent, wsPolicy), nil
+}
+
 // MergeHiddenModelPolicies returns a policy that hides a model when any non-nil
 // input hides it. Nil inputs are skipped; when every input is nil the result is
 // nil, meaning no rules. Inputs are never mutated.

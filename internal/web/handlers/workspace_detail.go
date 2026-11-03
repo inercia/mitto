@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -97,59 +99,89 @@ func (h *Handlers) handleWorkspaceModels(w http.ResponseWriter, r *http.Request,
 	writeJSONOK(w, response)
 }
 
-// applyHiddenModelPolicy filters the raw cached models through the configured
-// ACP server's hidden-model policy and fills the additive metadata. A policy
-// that fails to compile fails closed (nothing selectable).
+// orEmpty keeps the "trustworthy empty catalog" distinction intact for
+// FilterModelCatalog: a nil raw slice would be classified as "absent", but the
+// caller only invokes this helper after a cache hit, where nil means an empty
+// record.
+func orEmpty(raw []modelcache.Model) []modelcache.Model {
+	if raw == nil {
+		return []modelcache.Model{}
+	}
+	return raw
+}
+
+// applyHiddenModelPolicy filters the raw cached models through the combined
+// agent+workspace hidden-model policy. The agent half prefers the shared
+// runtime snapshot with a live-config fallback (matching conversation
+// sessions); the workspace half comes from the workspace's own rules. Any
+// compile failure fails closed: nothing is selectable.
 func (h *Handlers) applyHiddenModelPolicy(resp *WorkspaceModelsResponse, ws *configPkg.WorkspaceSettings, raw []modelcache.Model) {
-	var rules []string
-	if _, cfg := h.deps.SessionManager.GetGlobalRunnerInfo(); cfg != nil {
-		if srv, err := cfg.GetServer(ws.ACPServer); err == nil && srv != nil {
-			rules = srv.HiddenModels
+	// Agent half: snapshot-preferred, live-config fallback (parity with
+	// conversation sessions). Snapshot payloads are immutable, so the policy
+	// stays valid right after releasing the pin.
+	var agent *configPkg.HiddenModelPolicy
+	var agentErr error
+	if policies := h.deps.SessionManager.HiddenModelPolicies(); policies != nil {
+		snapshot, release := policies.Read()
+		agent = snapshot.Policy(ws.ACPServer)
+		release()
+	}
+	if agent == nil {
+		if _, cfg := h.deps.SessionManager.GetGlobalRunnerInfo(); cfg != nil {
+			if srv, err := cfg.GetServer(ws.ACPServer); err == nil && srv != nil {
+				agentRules := configPkg.NormalizeHiddenModels(srv.HiddenModels)
+				var cerr error
+				agent, cerr = configPkg.CompileHiddenModels(ws.ACPServer, agentRules)
+				if cerr != nil {
+					agentErr = fmt.Errorf("agent %q hidden models: %w", ws.ACPServer, cerr)
+				}
+			}
 		}
 	}
-	policy, err := configPkg.CompileHiddenModels(ws.ACPServer, rules)
-	failClosed := err != nil
-	if failClosed && h.deps.Logger != nil {
-		h.deps.Logger.Warn("hidden-model policy failed to compile; failing closed",
-			"acp_server", ws.ACPServer, "error", err)
-	}
-	hides := func(id, name string) bool {
-		return failClosed || (policy != nil && policy.Hides(id, name))
-	}
-	selectable := make([]modelcache.Model, 0, len(raw))
-	byID := make(map[string]modelcache.Model, len(raw))
-	for _, m := range raw {
-		byID[m.ID] = m
-		if !hides(m.ID, m.Name) {
-			selectable = append(selectable, m)
+	// Workspace half: rules on the very workspace the handler resolved, so the
+	// union costs no extra lookups. CombineAgentWorkspacePolicies fails closed
+	// (AllMatches policy) when the workspace rules cannot compile.
+	policy, wsErr := configPkg.CombineAgentWorkspacePolicies(ws.ACPServer, agent, ws.HiddenModels)
+	failErr := errors.Join(agentErr, wsErr)
+	if failErr != nil {
+		policy = configPkg.AllMatchesPolicy(ws.ACPServer)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("hidden-model policy failed to compile; failing closed",
+				"acp_server", ws.ACPServer, "error", failErr)
 		}
 	}
-	resp.Models = selectable
-	resp.HiddenCount = len(raw) - len(selectable)
-	resp.CatalogState = "available"
-	if len(raw) == 0 {
-		resp.CatalogState = "empty"
-	} else if len(selectable) == 0 {
-		resp.CatalogState = "policy_empty"
-	}
-	selectableIDs := make(map[string]bool, len(selectable))
-	for _, m := range selectable {
+	filtered := modelcache.FilterModelCatalog(policy, orEmpty(raw))
+	resp.Models = filtered.Selectable
+	resp.HiddenCount = filtered.HiddenCount
+	resp.CatalogState = string(filtered.State)
+
+	// Saved overrides: IDs hidden by either level surface in HiddenSavedIDs;
+	// remaining IDs that are not selectable are absent from the raw catalog.
+	// Both callers deduplicate so repeated override rows report once.
+	selectableIDs := make(map[string]bool, len(filtered.Selectable))
+	for _, m := range filtered.Selectable {
 		selectableIDs[m.ID] = true
 	}
+	var saved []string
+	seen := map[string]bool{}
 	for _, o := range ws.ModelOverrides {
-		if o.ACPServer != ws.ACPServer || o.ModelID == "" {
+		if o.ACPServer != ws.ACPServer || o.ModelID == "" || seen[o.ModelID] {
 			continue
 		}
-		name := ""
-		if m, ok := byID[o.ModelID]; ok {
-			name = m.Name
+		seen[o.ModelID] = true
+		saved = append(saved, o.ModelID)
+	}
+	hiddenSaved := modelcache.HiddenSavedIDs(policy, orEmpty(raw), saved)
+	hiddenSet := make(map[string]bool, len(hiddenSaved))
+	for _, id := range hiddenSaved {
+		hiddenSet[id] = true
+	}
+	resp.HiddenSavedIDs = hiddenSaved
+	for _, id := range saved {
+		if hiddenSet[id] || selectableIDs[id] {
+			continue
 		}
-		switch {
-		case hides(o.ModelID, name):
-			resp.HiddenSavedIDs = append(resp.HiddenSavedIDs, o.ModelID)
-		case !selectableIDs[o.ModelID]:
-			resp.UnavailableSavedIDs = append(resp.UnavailableSavedIDs, o.ModelID)
-		}
+		resp.UnavailableSavedIDs = append(resp.UnavailableSavedIDs, id)
 	}
 }
 

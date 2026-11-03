@@ -283,6 +283,11 @@ type SharedACPProcessConfig struct {
 	// switches forbidden by the current per-configured-server policy. Nil keeps
 	// legacy behavior (no hidden-model enforcement at the transport boundary).
 	HiddenModelPolicies *config.HiddenModelPolicies
+	// WorkspaceHiddenRules resolves the workspace-scoped hidden-model rules for
+	// the workspace this process serves (live workspace settings; nil is a safe
+	// no-op). It is resolved OUTSIDE the hidden-model policy lock; function
+	// fields are excluded from the process reuse key.
+	WorkspaceHiddenRules func() []string
 	// WorkingDir is the workspace's project directory (e.g., /Users/.../myproject).
 	// Used as the cwd for auxiliary sessions so the agent discovers MCP servers.
 	WorkingDir string
@@ -2757,20 +2762,39 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID string,
 	return err
 }
 
-// admitSetModelPolicy rejects a model switch forbidden by the current hidden
-// model policy for this configured server. It runs while the policy publication
-// is pinned, but performs no RPC, callback, storage, or observer work.
+// admitSetModelPolicy rejects a model switch forbidden by the combined
+// agent+workspace hidden-model policy: the agent half from the pinned policy
+// publication, the workspace half compiled from this workspace's live rules.
+// The workspace rules resolver runs BEFORE the Admit callback body, so nothing
+// but in-memory merges happens under the policy lock; no RPC, storage, or
+// observer work occurs inside it (mitto-zu4.3).
 func (p *SharedACPProcess) admitSetModelPolicy(sessionID acp.SessionId, modelID string) error {
+	// Workspace half: resolve and compile OUTSIDE the policy lock (rules come
+	// from a provider callback; compile errors fail closed to AllMatches).
+	var wsPolicy *config.HiddenModelPolicy
+	if p.config.WorkspaceHiddenRules != nil {
+		var err error
+		wsPolicy, err = config.CombineAgentWorkspacePolicies(p.config.ACPServer, nil, p.config.WorkspaceHiddenRules())
+		if err != nil && p.config.Logger != nil {
+			p.config.Logger.Warn("set_model workspace hidden-model policy failed to compile; failing closed",
+				"workspace_uuid", p.config.WorkspaceUUID, "acp_server", p.config.ACPServer, "error", err)
+		}
+	}
 	policies := p.config.HiddenModelPolicies
 	if policies == nil {
+		// No snapshot infrastructure: workspace rules alone still gate set_model.
+		if wsPolicy != nil && wsPolicy.Hides(modelID, "") {
+			return fmt.Errorf("set_model: model %q is hidden by current policy for server %q (session %s)", modelID, p.config.ACPServer, sessionID)
+		}
 		return nil
 	}
-	return policies.Admit(func(snapshot *config.HiddenModelSnapshot) error {
-		if snapshot == nil {
-			return nil
+	return policies.Admit(func(current *config.HiddenModelSnapshot) error {
+		var agent *config.HiddenModelPolicy
+		if current != nil {
+			agent = current.Policy(p.config.ACPServer)
 		}
-		policy := snapshot.Policy(p.config.ACPServer)
-		if policy == nil || !policy.Hides(modelID, "") {
+		merged := config.MergeHiddenModelPolicies(agent, wsPolicy)
+		if merged == nil || !merged.Hides(modelID, "") {
 			return nil
 		}
 		return fmt.Errorf("set_model: model %q is hidden by current policy for server %q (session %s)", modelID, p.config.ACPServer, sessionID)

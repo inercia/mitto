@@ -819,24 +819,25 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.processCtx, SharedACPProcessConfig{
-		WorkspaceUUID:       workspace.UUID,
-		ACPCommand:          acpCommand,
-		ACPCwd:              acpCwd,
-		ACPServer:           workspace.ACPServer,
-		HiddenModelPolicies: m.HiddenModelPolicies,
-		WorkingDir:          workspace.WorkingDir,
-		Env:                 acpEnv,
-		Runner:              r,
-		Logger:              processLogger,
-		CanRestartGlobal:    m.CanRestartGlobally,
-		RecordRestart:       m.RecordGlobalRestart,
-		MCPInitTimeout:      mcpInitTimeout,
-		OnMCPInitProgress:   onMCPInitProgress,
-		OnMCPInitTimeout:    onMCPInitTimeout,
-		StderrPatterns:      stderrPatterns,
-		AgentDefaultEnv:     agentDefaultEnv,
-		InitializeTimeout:   agentInitializeTimeout,
-		StartupContext:      m.ctx,
+		WorkspaceUUID:        workspace.UUID,
+		ACPCommand:           acpCommand,
+		ACPCwd:               acpCwd,
+		ACPServer:            workspace.ACPServer,
+		HiddenModelPolicies:  m.HiddenModelPolicies,
+		WorkspaceHiddenRules: m.workspaceHiddenRulesResolver(workspace.UUID),
+		WorkingDir:           workspace.WorkingDir,
+		Env:                  acpEnv,
+		Runner:               r,
+		Logger:               processLogger,
+		CanRestartGlobal:     m.CanRestartGlobally,
+		RecordRestart:        m.RecordGlobalRestart,
+		MCPInitTimeout:       mcpInitTimeout,
+		OnMCPInitProgress:    onMCPInitProgress,
+		OnMCPInitTimeout:     onMCPInitTimeout,
+		StderrPatterns:       stderrPatterns,
+		AgentDefaultEnv:      agentDefaultEnv,
+		InitializeTimeout:    agentInitializeTimeout,
+		StartupContext:       m.ctx,
 	})
 	createDuration := time.Since(createStart)
 
@@ -2083,6 +2084,43 @@ func (m *ACPProcessManager) auxiliaryPolicy(server string) *config.HiddenModelPo
 	return nil
 }
 
+// auxiliaryWorkspaceRules returns the workspace's live hidden-model rules
+// (nil-safe on a missing workspace).
+func (m *ACPProcessManager) auxiliaryWorkspaceRules(ws *config.WorkspaceSettings) []string {
+	if ws == nil {
+		return nil
+	}
+	return config.NormalizeHiddenModels(ws.HiddenModels)
+}
+
+// combinedAuxiliaryPolicy unions the agent-level policy with the workspace's
+// live hidden-model rules. Workspace rules that fail to compile fail closed:
+// the returned policy hides everything (mitto-zu4.3).
+func (m *ACPProcessManager) combinedAuxiliaryPolicy(server string, ws *config.WorkspaceSettings) *config.HiddenModelPolicy {
+	policy, err := config.CombineAgentWorkspacePolicies(server, m.auxiliaryPolicy(server), m.auxiliaryWorkspaceRules(ws))
+	if err != nil {
+		m.logAuxiliaryPolicyFailure(server, err)
+	}
+	return policy
+}
+
+// workspaceAuxiliaryPolicy compiles the workspace-level half alone; the agent
+// half is re-read from a pinned snapshot inside admission callbacks.
+func (m *ACPProcessManager) workspaceAuxiliaryPolicy(server string, ws *config.WorkspaceSettings) *config.HiddenModelPolicy {
+	policy, err := config.CombineAgentWorkspacePolicies(server, nil, m.auxiliaryWorkspaceRules(ws))
+	if err != nil {
+		m.logAuxiliaryPolicyFailure(server, err)
+	}
+	return policy
+}
+
+// logAuxiliaryPolicyFailure records a fail-closed workspace rule compile error.
+func (m *ACPProcessManager) logAuxiliaryPolicyFailure(server string, err error) {
+	if m.logger != nil {
+		m.logger.Warn("auxiliary workspace hidden-model policy failed to compile; failing closed", "acp_server", server, "error", err)
+	}
+}
+
 func (m *ACPProcessManager) auxiliarySelector(ws *config.WorkspaceSettings) (bool, string) {
 	if ws != nil && (ws.AuxiliaryModelProfile != "" || ws.AuxiliaryModelTag != "" || ws.AuxiliaryModelSelection != nil) {
 		return true, "workspace"
@@ -2108,7 +2146,7 @@ func (m *ACPProcessManager) auxiliaryModelUnavailable(workspaceUUID, purpose, se
 // active policy, an unknown or hidden agent default cannot survive without an
 // eligible catalog fallback.
 func (m *ACPProcessManager) resolveAuxiliaryModel(ws *config.WorkspaceSettings, raw *conversation.SessionModelState, configuredServer, workspaceUUID, purpose string) (string, bool, error) {
-	return m.resolveAuxiliaryModelWithPolicy(ws, raw, m.auxiliaryPolicy(configuredServer), workspaceUUID, purpose)
+	return m.resolveAuxiliaryModelWithPolicy(ws, raw, m.combinedAuxiliaryPolicy(configuredServer, ws), workspaceUUID, purpose)
 }
 
 // resolveAuxiliaryModelWithPolicy is the pure resolver for a specific policy
@@ -2199,11 +2237,27 @@ func (m *ACPProcessManager) reconcileAuxiliarySession(ctx context.Context, works
 	return nil
 }
 
+// auxiliaryWorkspaceSettings returns the workspace settings via the provider,
+// or nil when no provider is wired.
 func (m *ACPProcessManager) auxiliaryWorkspaceSettings(workspaceUUID string) *config.WorkspaceSettings {
 	if m.WorkspaceConfigProvider == nil {
 		return nil
 	}
 	return m.WorkspaceConfigProvider(workspaceUUID)
+}
+
+// workspaceHiddenRulesResolver returns the callback process-level set_model
+// admission uses to read a workspace's live hidden-model rules. The closure
+// captures the manager so tests can swap the provider after process creation.
+// Nil even when the provider or workspace is missing is a safe no-op.
+func (m *ACPProcessManager) workspaceHiddenRulesResolver(workspaceUUID string) func() []string {
+	return func() []string {
+		ws := m.auxiliaryWorkspaceSettings(workspaceUUID)
+		if ws == nil {
+			return nil
+		}
+		return ws.HiddenModels
+	}
 }
 
 // prepareAuxiliaryDispatch reconciles the auxiliary model after the caller has
@@ -2228,21 +2282,27 @@ func (m *ACPProcessManager) admitAuxiliaryDispatch(process *SharedACPProcess, wo
 	if !state.matchesProcess(process, workspaceUUID) {
 		return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", "", "auxiliary session provenance no longer matches the shared process", nil)
 	}
-	if m.HiddenModelPolicies == nil {
-		return nil
-	}
-	snapshot := m.HiddenModelPolicies.Snapshot()
-	if snapshot == nil {
-		return nil
-	}
 	server := process.config.ACPServer
-	policy := snapshot.Policy(server)
+	// The workspace half is resolved and compiled OUTSIDE the policy lock; the
+	// agent half is merged from the pinned snapshot (no callbacks inside Admit).
+	wsPolicy := m.workspaceAuxiliaryPolicy(server, ws)
+	policies := m.HiddenModelPolicies
+	var snapshot *config.HiddenModelSnapshot
+	if policies != nil {
+		if pinned := policies.Snapshot(); pinned != nil {
+			snapshot = pinned
+		}
+	}
+	snapshotPolicy := config.MergeHiddenModelPolicies(m.auxiliaryPolicy(server), wsPolicy)
+	if snapshot == nil && wsPolicy == nil {
+		return nil
+	}
 	raw := state.rawModelState()
-	if policy != nil && (raw == nil || raw.Synthesized || raw.CurrentModelId == "") {
+	if snapshotPolicy != nil && (raw == nil || raw.Synthesized || raw.CurrentModelId == "") {
 		return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", "", "agent did not provide a verifiable model catalog and current model", nil)
 	}
 	if raw != nil && !raw.Synthesized && raw.CurrentModelId != "" {
-		target, shouldSet, err := m.resolveAuxiliaryModelWithPolicy(ws, raw, policy, workspaceUUID, purpose)
+		target, shouldSet, err := m.resolveAuxiliaryModelWithPolicy(ws, raw, snapshotPolicy, workspaceUUID, purpose)
 		if err != nil {
 			return err
 		}
@@ -2250,14 +2310,19 @@ func (m *ACPProcessManager) admitAuxiliaryDispatch(process *SharedACPProcess, wo
 			return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", raw.CurrentModelId, "hidden-model policy changed after reconciliation; a confirmed eligible model is required before dispatch", nil)
 		}
 	}
-	return m.HiddenModelPolicies.Admit(func(current *config.HiddenModelSnapshot) error {
+	if policies == nil {
+		// Without snapshot infrastructure the workspace half still gated the
+		// strict checks above; anything eligible under them may dispatch.
+		return nil
+	}
+	return policies.Admit(func(current *config.HiddenModelSnapshot) error {
 		if current != snapshot {
 			return m.auxiliaryModelUnavailable(workspaceUUID, purpose, "", "", "hidden-model policy changed during final auxiliary admission", nil)
 		}
 		if current == nil {
 			return nil
 		}
-		currentPolicy := current.Policy(server)
+		currentPolicy := config.MergeHiddenModelPolicies(current.Policy(server), wsPolicy)
 		if currentPolicy == nil {
 			return nil
 		}
@@ -2276,6 +2341,22 @@ func (m *ACPProcessManager) admitAuxiliaryDispatch(process *SharedACPProcess, wo
 		}
 		return nil
 	})
+}
+
+// currentModelHidden reports whether a policy hides the raw model state's
+// current model. A nil policy or raw state hides nothing.
+func currentModelHidden(policy *config.HiddenModelPolicy, raw *conversation.SessionModelState) bool {
+	if policy == nil || raw == nil {
+		return false
+	}
+	displayName := ""
+	for _, model := range raw.AvailableModels {
+		if model.ModelId == raw.CurrentModelId {
+			displayName = model.Name
+			break
+		}
+	}
+	return policy.Hides(raw.CurrentModelId, displayName)
 }
 
 func (s *auxiliarySessionState) modelForLog() (string, bool) {
