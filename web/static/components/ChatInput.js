@@ -1332,11 +1332,12 @@ function ChatInputImpl({
         setTimeout(() => setSendError(null), 10000);
         return;
       }
-      const enqueue = async (userArgs) => {
+      const enqueue = async (userArgs, rememberResponses) => {
         try {
           await onAddToQueue("", [], [], {
             promptName: prompt.name,
             ...(userArgs ? { arguments: userArgs } : {}),
+            ...(rememberResponses !== undefined ? { rememberResponses } : {}),
           });
         } catch (err) {
           console.error("Failed to add to queue:", err);
@@ -1359,10 +1360,14 @@ function ChatInputImpl({
         onOpenPromptParamDialog(
           prompt,
           promptDialogParameters(prompt, "prompts", linkedBeadNames),
-          async (userArgs) => {
-            await enqueue(userArgs);
+          async (userArgs, meta) => {
+            await enqueue(userArgs, meta?.rememberResponses);
           },
-          { workingDir, initialValues: linkedBeadArgs },
+          {
+            workingDir,
+            initialValues: linkedBeadArgs,
+            rememberControl: true,
+          },
         );
         return;
       }

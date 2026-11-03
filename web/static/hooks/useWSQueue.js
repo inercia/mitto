@@ -144,6 +144,9 @@ export function useWSQueue(activeSessionId, options = {}) {
         if (promptArgs && Object.keys(promptArgs).length > 0) {
           body.arguments = promptArgs;
         }
+        if (typeof opts.rememberResponses === "boolean") {
+          body.remember_responses = opts.rememberResponses;
+        }
         const data = await getSdkClient().sessions.queue.add(
           activeSessionId,
           body,

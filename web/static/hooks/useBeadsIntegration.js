@@ -371,7 +371,7 @@ export function useBeadsIntegration({
         onOpenPromptParamDialog(
           prompt,
           dialogParams,
-          async (userArgs) => {
+          async (userArgs, meta) => {
             const result = await startConversationWithPrompt({
               workingDir: beadsWorkingDir,
               acpServer: ws?.acp_server,
@@ -379,6 +379,7 @@ export function useBeadsIntegration({
               beadsIssue: issue.id,
               prompt,
               arguments: { ...autoArgs, ...userArgs },
+              rememberResponses: meta?.rememberResponses,
             });
             if (!result?.sessionId) {
               showToast({
