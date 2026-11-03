@@ -163,10 +163,10 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Store != nil {
 			metas, _ := h.deps.Store.List()
 			if existingID, found := session.FindConversationByBeadsIssue(metas, req.WorkingDir, req.BeadsIssue); found {
-				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments, req.RememberResponses) {
 					return
 				}
-				h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue)
+				h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue, req.RememberResponses)
 				return
 			}
 		}
@@ -208,10 +208,10 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 			if h.deps.Store != nil {
 				metas, _ := h.deps.Store.List()
 				if existingID, found := session.FindConversationByTitle(metas, req.WorkingDir, title); found {
-					if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+					if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments, req.RememberResponses) {
 						return
 					}
-					h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue)
+					h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue, req.RememberResponses)
 					return
 				}
 			}
@@ -245,10 +245,10 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Store != nil {
 			metas, _ := h.deps.Store.List()
 			if existingID, found := session.FindSingletonCandidate(metas, req.WorkingDir, promptName); found {
-				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments, req.RememberResponses) {
 					return
 				}
-				h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue)
+				h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue, req.RememberResponses)
 				return
 			}
 		}
@@ -455,7 +455,7 @@ func (h *Handlers) seedQueueWithNamedPrompt(bs *conversation.BackgroundSession, 
 // lockSingleton) so the check-then-skip is atomic against concurrent dupes.
 // Returns false when reuseCoalesce is off or no match is found — callers
 // then fall through to reuseSingletonSession as before (mitto-djs1).
-func (h *Handlers) maybeCoalesce(w http.ResponseWriter, existingID, promptName, workingDir string, arguments map[string]string) bool {
+func (h *Handlers) maybeCoalesce(w http.ResponseWriter, existingID, promptName, workingDir string, arguments map[string]string, rememberResponses *bool) bool {
 	if promptName == "" || h.deps.ResolvePromptReuseCoalesce == nil {
 		return false
 	}
@@ -480,6 +480,16 @@ func (h *Handlers) maybeCoalesce(w http.ResponseWriter, existingID, promptName, 
 			"prompt_name", promptName,
 			"working_dir", workingDir)
 	}
+	// Apply the explicit Remember responses choice to the coalesced request:
+	// the user submitted a dialog whose responses are identical to the
+	// in-flight/queued dispatch (PromptMatchesActiveOrQueued), so the
+	// preference is recorded even though nothing new was enqueued.
+	if rememberResponses != nil && bs != nil {
+		if err := h.applyRememberResponses(existingID, bs, promptName, arguments, *rememberResponses); err != nil && h.deps.Logger != nil {
+			h.deps.Logger.Warn("Failed to apply remember_responses on coalesced dispatch",
+				"error", err, "session_id", existingID, "prompt_name", promptName)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"session_id": existingID,
 		"reused":     true,
@@ -495,7 +505,7 @@ func (h *Handlers) maybeCoalesce(w http.ResponseWriter, existingID, promptName, 
 // enqueuing directly (without dispatch) when not. If busy, it is left
 // untouched (focus-only). Always responds 200 with
 // {"session_id": existingID, "reused": true}.
-func (h *Handlers) reuseSingletonSession(w http.ResponseWriter, existingID, promptName string, arguments map[string]string, beadsIssue string) {
+func (h *Handlers) reuseSingletonSession(w http.ResponseWriter, existingID, promptName string, arguments map[string]string, beadsIssue string, rememberResponses *bool) {
 	store := h.deps.Store
 	var bs *conversation.BackgroundSession
 	if h.deps.SessionManager != nil {
@@ -528,6 +538,12 @@ func (h *Handlers) reuseSingletonSession(w http.ResponseWriter, existingID, prom
 		if idle {
 			if bs != nil {
 				h.seedQueueWithNamedPrompt(bs, existingID, promptName, arguments)
+				if rememberResponses != nil {
+					if err := h.applyRememberResponses(existingID, bs, promptName, arguments, *rememberResponses); err != nil && h.deps.Logger != nil {
+						h.deps.Logger.Warn("Failed to apply remember_responses on reused singleton",
+							"error", err, "session_id", existingID, "prompt_name", promptName)
+					}
+				}
 			} else {
 				maxSize := configPkg.DefaultQueueMaxSize
 				msg, err := queue.Add("", nil, nil, "", nil, maxSize, arguments, promptName)
