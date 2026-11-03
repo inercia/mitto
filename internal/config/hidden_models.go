@@ -74,6 +74,23 @@ func CompileHiddenModels(server string, rules []string) (*HiddenModelPolicy, err
 	return p, nil
 }
 
+// MergeHiddenModelPolicies returns a policy that hides a model when any non-nil
+// input hides it. Nil inputs are skipped; when every input is nil the result is
+// nil, meaning no rules. Inputs are never mutated.
+func MergeHiddenModelPolicies(policies ...*HiddenModelPolicy) *HiddenModelPolicy {
+	var merged *HiddenModelPolicy
+	for _, p := range policies {
+		if p == nil {
+			continue
+		}
+		if merged == nil {
+			merged = &HiddenModelPolicy{server: p.server}
+		}
+		merged.patterns = append(merged.patterns, p.patterns...)
+	}
+	return merged
+}
+
 // Hides reports whether any rule matches the model ID or display name.
 // A nil or empty policy hides nothing.
 func (p *HiddenModelPolicy) Hides(id, name string) bool {

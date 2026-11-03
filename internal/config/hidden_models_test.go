@@ -35,6 +35,32 @@ func TestHiddenModels_Policy(t *testing.T) {
 	}
 }
 
+func TestHiddenModels_MergePolicies(t *testing.T) {
+	agent, _ := CompileHiddenModels("s", []string{"^agent$"})
+	workspace, _ := CompileHiddenModels("s", []string{".*Terra.*"})
+
+	if MergeHiddenModelPolicies() != nil || MergeHiddenModelPolicies(nil, nil) != nil {
+		t.Fatal("all-nil merge must stay nil (no rules)")
+	}
+	only := MergeHiddenModelPolicies(nil, workspace)
+	if only.Hides("agent", "") || !only.Hides("x", "GPT Terra") {
+		t.Error("nil+workspace must hide like workspace alone")
+	}
+	merged := MergeHiddenModelPolicies(agent, workspace)
+	if !merged.Hides("agent", "") {
+		t.Error("agent-only match must be hidden")
+	}
+	if !merged.Hides("x", "GPT Terra") {
+		t.Error("workspace-only match must be hidden")
+	}
+	if merged.Hides("gpt-4o", "Plain") {
+		t.Error("model matched by neither level must stay selectable")
+	}
+	if len(agent.patterns) != 1 || len(workspace.patterns) != 1 {
+		t.Error("merge must not mutate inputs")
+	}
+}
+
 func TestHiddenModels_Filter(t *testing.T) {
 	type m struct{ id, name string }
 	in := []m{{"a", "Alpha"}, {"openrouter/t", "GPT Terra 5"}, {"c", "Gamma"}}

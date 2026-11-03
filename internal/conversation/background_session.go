@@ -311,19 +311,23 @@ type BackgroundSession struct {
 	// selection paths for this session. It is copied at creation and refreshed
 	// by SessionManager.SetWorkspaces when the workspace configuration changes,
 	// so already-running sessions honor edited overrides without a resume.
-	modelOverrides      config.ModelOverrides
-	modelOverridesMu    sync.RWMutex
-	contextFlushCommand string                  // Agent-native context-flush command (e.g. "/clear"); empty = disabled
-	procCtl             acpProcessController    // ACP restart policy collaborator (composition)
-	titleCoord          titleCoordinator        // Auto-title generation triggers collaborator (composition)
-	promptArgCache      *promptArgCache         // Per-conversation prompt argument value cache (composition)
-	queueDisp           queueDispatcher         // Queue tick / dispatch logic collaborator (composition)
-	callbackSink        acpCallbackSink         // WebClient callback cluster collaborator (composition)
-	uiPromptCtr         uiPromptCenter          // UI prompt + notify collaborator (composition)
-	followUpCoord       followUpCoordinator     // Follow-up suggestions + action-button collaborator (composition)
-	configMgr           configManager           // Session-config / model-baseline collaborator (composition)
-	handshaker          sharedSessionHandshaker // Shared-process session handshake collaborator (composition)
-	promptDisp          promptDispatcher        // PromptWithMeta helper-split collaborator (composition)
+	modelOverrides config.ModelOverrides
+	// workspaceHiddenModels is the workspace-level hidden-model rules, combined
+	// with the agent-level policy by combineHiddenModelPolicies. Refreshed with
+	// modelOverrides by SessionManager.SetWorkspaces.
+	workspaceHiddenModels []string
+	modelOverridesMu      sync.RWMutex
+	contextFlushCommand   string                  // Agent-native context-flush command (e.g. "/clear"); empty = disabled
+	procCtl               acpProcessController    // ACP restart policy collaborator (composition)
+	titleCoord            titleCoordinator        // Auto-title generation triggers collaborator (composition)
+	promptArgCache        *promptArgCache         // Per-conversation prompt argument value cache (composition)
+	queueDisp             queueDispatcher         // Queue tick / dispatch logic collaborator (composition)
+	callbackSink          acpCallbackSink         // WebClient callback cluster collaborator (composition)
+	uiPromptCtr           uiPromptCenter          // UI prompt + notify collaborator (composition)
+	followUpCoord         followUpCoordinator     // Follow-up suggestions + action-button collaborator (composition)
+	configMgr             configManager           // Session-config / model-baseline collaborator (composition)
+	handshaker            sharedSessionHandshaker // Shared-process session handshake collaborator (composition)
+	promptDisp            promptDispatcher        // PromptWithMeta helper-split collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -619,6 +623,9 @@ type BackgroundSessionConfig struct {
 	// ModelOverrides carries the selected workspace's model-tag overrides into
 	// this session. It is copied when the BackgroundSession is constructed.
 	ModelOverrides config.ModelOverrides
+	// HiddenModels carries the selected workspace's hidden-model rules into this
+	// session. It is copied when the BackgroundSession is constructed.
+	HiddenModels []string
 
 	// AvailableACPServers is the pre-computed list of ACP servers that have workspaces
 	// configured for the session's working directory. Populated by SessionManager using
@@ -1025,6 +1032,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = cfg.MittoConfig
 	bs.hiddenModelPolicies = cfg.HiddenModelPolicies
+	bs.setWorkspaceHiddenRules(cfg.HiddenModels)
 	// Per-workspace initial-model preference (applied after agent reports models).
 	bs.initialModelPreference = cfg.InitialModelPreference
 	// Workspace overrides are copied above so later workspace updates cannot mutate
@@ -1237,6 +1245,22 @@ func (bs *BackgroundSession) setModelOverrides(overrides config.ModelOverrides) 
 	bs.modelOverridesMu.Unlock()
 }
 
+// setWorkspaceHiddenRules replaces the workspace-level hidden-model rules used
+// by hiddenModelPolicy. Blank rows are dropped; nil and empty both mean no rules.
+func (bs *BackgroundSession) setWorkspaceHiddenRules(rules []string) {
+	cloned := config.NormalizeHiddenModels(rules)
+	bs.modelOverridesMu.Lock()
+	bs.workspaceHiddenModels = cloned
+	bs.modelOverridesMu.Unlock()
+}
+
+// workspaceHiddenRules returns a copy of the cached workspace-level rules.
+func (bs *BackgroundSession) workspaceHiddenRules() []string {
+	bs.modelOverridesMu.RLock()
+	defer bs.modelOverridesMu.RUnlock()
+	return append([]string(nil), bs.workspaceHiddenModels...)
+}
+
 // ResumeBackgroundSession creates a background session for an existing persisted session.
 // This is used when switching to an old conversation - we create a new ACP connection
 // but continue recording to the existing session.
@@ -1317,6 +1341,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = config.MittoConfig
 	bs.hiddenModelPolicies = config.HiddenModelPolicies
+	bs.setWorkspaceHiddenRules(config.HiddenModels)
 	// Initial-model preference (workspace/ACP-server InitialModelTag, or an
 	// auto-child's ModelTag): applied by cbInitBaselineModelIfEmpty after the
 	// agent reports its models, unless a persisted BaselineModel already wins.

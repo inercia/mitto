@@ -487,11 +487,19 @@ func (bs *BackgroundSession) pdHiddenModelPolicy() (*config.HiddenModelPolicy, e
 	return bs.hiddenModelPolicy()
 }
 
-// hiddenModelPolicy compiles the hidden-model policy of this session's
-// configured ACP server. A missing config, unknown server or a server with no
-// rules yields a nil (allow-all, no-rule) policy, so a non-nil policy always
-// means rules are active; a compile failure is returned so callers fail closed.
+// hiddenModelPolicy compiles the effective hidden-model policy of this session:
+// the union of the agent-level and workspace-level rules. A missing config,
+// unknown server or no rules at either level yields a nil (allow-all, no-rule)
+// policy, so a non-nil policy always means rules are active; a compile failure
+// at either level is returned so callers fail closed.
 func (bs *BackgroundSession) hiddenModelPolicy() (*config.HiddenModelPolicy, error) {
+	agent, err := bs.agentHiddenModelPolicy()
+	return bs.combineHiddenModelPolicies(agent, err)
+}
+
+// agentHiddenModelPolicy compiles the hidden-model policy of this session's
+// configured ACP server, from the published snapshot when available.
+func (bs *BackgroundSession) agentHiddenModelPolicy() (*config.HiddenModelPolicy, error) {
 	if bs.hiddenModelPolicies != nil {
 		if snapshot := bs.hiddenModelPolicies.Snapshot(); snapshot != nil {
 			return snapshot.Policy(bs.acpServer), nil
@@ -515,13 +523,47 @@ func (bs *BackgroundSession) hiddenModelPolicy() (*config.HiddenModelPolicy, err
 	return policy, err
 }
 
+// workspaceHiddenModelPolicy compiles the cached workspace-level rules. No rules
+// yield a nil policy.
+func (bs *BackgroundSession) workspaceHiddenModelPolicy() (*config.HiddenModelPolicy, error) {
+	rules := bs.workspaceHiddenRules()
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	label := bs.workspaceUUID
+	if label == "" {
+		label = bs.workingDir
+	}
+	return config.CompileHiddenModels(label, rules)
+}
+
+// combineHiddenModelPolicies is the single place where the agent-level and
+// workspace-level policies are unioned: a model is hidden when either level
+// hides it. A compile failure at either level fails closed with an error naming
+// that level, and both failures are reported together.
+func (bs *BackgroundSession) combineHiddenModelPolicies(agent *config.HiddenModelPolicy, agentErr error) (*config.HiddenModelPolicy, error) {
+	workspace, workspaceErr := bs.workspaceHiddenModelPolicy()
+	var errs []error
+	if agentErr != nil {
+		errs = append(errs, fmt.Errorf("agent %q hidden models: %w", bs.acpServer, agentErr))
+	}
+	if workspaceErr != nil {
+		errs = append(errs, fmt.Errorf("workspace %q hidden models: %w", bs.workspaceUUID, workspaceErr))
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return config.MergeHiddenModelPolicies(agent, workspace), nil
+}
+
 // readHiddenModelPolicy pins publication only across an in-memory view commit.
 // No callback, observer, storage operation or RPC may run before release.
 func (bs *BackgroundSession) readHiddenModelPolicy() (*config.HiddenModelPolicy, func(), error) {
 	if bs.hiddenModelPolicies != nil {
 		snapshot, release := bs.hiddenModelPolicies.Read()
 		if snapshot != nil {
-			return snapshot.Policy(bs.acpServer), release, nil
+			policy, err := bs.combineHiddenModelPolicies(snapshot.Policy(bs.acpServer), nil)
+			return policy, release, err
 		}
 		release()
 	}

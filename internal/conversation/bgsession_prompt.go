@@ -2090,7 +2090,10 @@ func (bs *BackgroundSession) finalPolicyAdmission(d promptDeps) error {
 		if snapshot == nil {
 			return activeModelPreflight(d)
 		}
-		policy := snapshot.Policy(bs.acpServer)
+		policy, err := bs.combineHiddenModelPolicies(snapshot.Policy(bs.acpServer), nil)
+		if err != nil {
+			return fmt.Errorf("hidden-model policy unavailable for active model: %w", errors.Join(errModelHiddenByPolicy, err))
+		}
 		if err := activeModelPreflightWithPolicy(d.pdGetAgentModels(), policy); err != nil {
 			return err
 		}

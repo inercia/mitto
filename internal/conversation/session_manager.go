@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -539,28 +540,35 @@ func (sm *SessionManager) SetAPIPrefix(prefix string) {
 // SetWorkspaces sets the available workspaces.
 // Workspaces without UUIDs will have UUIDs generated automatically.
 //
-// Live sessions cache their workspace model overrides at creation, so the
-// registry replacement is followed by a refresh that lets already-running
-// conversations resolve model tags against the edited overrides (mitto-971).
+// Live sessions cache their workspace model overrides and hidden-model rules at
+// creation, so the registry replacement is followed by a refresh that lets
+// already-running conversations resolve model tags and filter models against
+// the edited workspace settings (mitto-971).
 func (sm *SessionManager) SetWorkspaces(workspaces []config.WorkspaceSettings) {
 	sm.wsRegistry.SetWorkspaces(workspaces)
-	sm.RefreshModelOverrides()
+	sm.refreshWorkspaceState()
 }
 
-// RefreshModelOverrides re-resolves each live session's workspace-scoped model
-// overrides from the workspace registry. Sessions whose workspace can no longer
-// be resolved keep their previous overrides. Returns the number of refreshed
-// sessions.
-func (sm *SessionManager) RefreshModelOverrides() int {
+// refreshWorkspaceState re-resolves each live session's workspace from the
+// registry and pushes its model overrides and hidden-model rules. A session
+// whose hidden-model rules changed is refiltered and its clients notified.
+// Sessions whose workspace can no longer be resolved keep their previous state.
+// Returns the number of refreshed sessions.
+func (sm *SessionManager) refreshWorkspaceState() int {
+	type liveSession struct {
+		id string
+		bs *BackgroundSession
+	}
 	sm.mu.RLock()
-	sessions := make([]*BackgroundSession, 0, len(sm.sessions))
-	for _, bs := range sm.sessions {
-		sessions = append(sessions, bs)
+	sessions := make([]liveSession, 0, len(sm.sessions))
+	for id, bs := range sm.sessions {
+		sessions = append(sessions, liveSession{id: id, bs: bs})
 	}
 	sm.mu.RUnlock()
 
 	refreshed := 0
-	for _, bs := range sessions {
+	for _, s := range sessions {
+		bs := s.bs
 		ws := sm.wsRegistry.GetWorkspaceByUUID(bs.workspaceUUID)
 		if ws == nil {
 			ws = sm.wsRegistry.GetWorkspaceByDirAndACP(bs.workingDir, bs.acpServer)
@@ -569,6 +577,11 @@ func (sm *SessionManager) RefreshModelOverrides() int {
 			continue
 		}
 		bs.setModelOverrides(ws.ModelOverrides)
+		if !slices.Equal(bs.workspaceHiddenRules(), config.NormalizeHiddenModels(ws.HiddenModels)) {
+			bs.setWorkspaceHiddenRules(ws.HiddenModels)
+			bs.RefilterModelPolicy()
+			sm.broadcastConfigOptionChanged(s.id, "", "")
+		}
 		refreshed++
 	}
 	return refreshed
@@ -2494,8 +2507,10 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		workspaceName = effectiveWs.Name
 	}
 	var workspaceModelOverrides config.ModelOverrides
+	var workspaceHiddenModels []string
 	if effectiveWs != nil {
 		workspaceModelOverrides = effectiveWs.ModelOverrides
+		workspaceHiddenModels = effectiveWs.HiddenModels
 	}
 	sharedProcessStart := time.Now()
 	sharedProcess, sharedLease, acquireErr := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
@@ -2560,6 +2575,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		HiddenModelPolicies:            sm.HiddenModelPolicies(),
 		InitialModelPreference:         initialModelPref, // Per-workspace initial-model preference (applied on fresh sessions)
 		ModelOverrides:                 workspaceModelOverrides,
+		HiddenModels:                   workspaceHiddenModels,
 		AvailableACPServers:            availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
@@ -3265,8 +3281,10 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		workspaceName = foundWs.Name
 	}
 	var workspaceModelOverrides config.ModelOverrides
+	var workspaceHiddenModels []string
 	if foundWs != nil {
 		workspaceModelOverrides = foundWs.ModelOverrides
+		workspaceHiddenModels = foundWs.HiddenModels
 	}
 	cfg := BackgroundSessionConfig{
 		// CreationCtx is canceled by CloseSession when deletion invalidates this pending
@@ -3298,6 +3316,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		HiddenModelPolicies:            sm.HiddenModelPolicies(),
 		InitialModelPreference:         initialModelPref, // Initial-model preference: workspace/ACP-server default or auto-child model_tag (mitto-b3qe)
 		ModelOverrides:                 workspaceModelOverrides,
+		HiddenModels:                   workspaceHiddenModels,
 		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
