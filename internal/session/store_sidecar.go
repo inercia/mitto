@@ -165,6 +165,50 @@ func (s *Store) WriteSessionSidecarJSON(sessionID, name string, value any) error
 	return fileutil.WriteJSONAtomic(filepath.Join(s.sessionDir(sessionID), name), value, 0600)
 }
 
+// UpdateSessionSidecarJSON performs a read-modify-write of a sidecar under the
+// session write lock, so concurrent updates cannot lose each other's changes.
+// update receives the current bytes (nil when the sidecar is absent) and returns
+// the replacement, or nil to leave the sidecar untouched. The replacement is
+// written durably and is never created for a deleted session.
+func (s *Store) UpdateSessionSidecarJSON(sessionID, name string, update func(current []byte) ([]byte, error)) error {
+	if err := validateSidecarName(name); err != nil {
+		return err
+	}
+	if update == nil {
+		return fmt.Errorf("sidecar update requires an update function")
+	}
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := os.Stat(s.metadataPath(sessionID)); err != nil {
+		if os.IsNotExist(err) {
+			return ErrSessionNotFound
+		}
+		return err
+	}
+	path := filepath.Join(s.sessionDir(sessionID), name)
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if os.IsNotExist(err) {
+		raw = nil
+	}
+	next, err := update(bytes.Clone(raw))
+	if err != nil {
+		return err
+	}
+	if next == nil {
+		return nil
+	}
+	if !json.Valid(next) {
+		return fmt.Errorf("sidecar %s update produced invalid JSON", name)
+	}
+	return fileutil.WriteJSONAtomicDurableIfDirExists(path, json.RawMessage(next), 0600)
+}
+
 func validateSidecarName(name string) error {
 	if name == "" || name == "." || name == ".." || filepath.IsAbs(name) || filepath.Base(name) != name {
 		return fmt.Errorf("invalid session sidecar name %q", name)
