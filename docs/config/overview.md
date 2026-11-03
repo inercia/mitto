@@ -206,6 +206,21 @@ acp:
       - "preview"
 ```
 
+### Hiding models per workspace
+
+Each workspace may set `hidden_models` with the same semantics: case-insensitive Go (RE2) regular expressions matched against model IDs and display names, in addition to rules set on the agent serving that workspace. Invalid patterns are rejected when saving the configuration; whitespace-only entries are dropped. Omitting the field keeps existing rules, while an explicit empty list clears them.
+
+```json
+{
+  "workspaces": [
+    {
+      "working_dir": "/home/user/my-project",
+      "hidden_models": ["^my-org-internal-"]
+    }
+  ]
+}
+```
+
 ## JSON Format
 
 When using `settings.json`, the format is slightly different:
