@@ -415,6 +415,28 @@ func mergeRuntimeAuth(savedAuth, existingAuth *configPkg.WebAuth, username, pass
 	return runtimeAuth
 }
 
+// workspacesWithPreservedHiddenModels copies the requested workspaces. A workspace
+// whose hidden_models is omitted (nil) keeps the rules currently stored for the
+// same workspace; an explicit list (including []) replaces them, with blank rows
+// dropped.
+func (s *Server) workspacesWithPreservedHiddenModels(requested []configPkg.WorkspaceSettings) []configPkg.WorkspaceSettings {
+	existing := make(map[string][]string, len(s.config.Workspaces))
+	for i := range s.config.Workspaces {
+		ws := &s.config.Workspaces[i]
+		existing[ws.WorkspaceID()] = ws.HiddenModels
+	}
+	result := make([]configPkg.WorkspaceSettings, len(requested))
+	copy(result, requested)
+	for i := range result {
+		if result[i].HiddenModels == nil {
+			result[i].HiddenModels = existing[result[i].WorkspaceID()]
+			continue
+		}
+		result[i].HiddenModels = configPkg.NormalizeHiddenModels(result[i].HiddenModels)
+	}
+	return result
+}
+
 func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.Settings) *ExternalAccessWarning {
 	// Build ACP server list for internal config (including per-server prompts)
 	newACPServers := make([]configPkg.ACPServer, len(settings.ACPServers))
@@ -517,8 +539,7 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 
 	// ACP command/cwd/env are resolved from global config at runtime and are never
 	// stored on the workspace. Just copy the workspace as-is from the request.
-	newWorkspaces := make([]configPkg.WorkspaceSettings, len(req.Workspaces))
-	copy(newWorkspaces, req.Workspaces)
+	newWorkspaces := s.workspacesWithPreservedHiddenModels(req.Workspaces)
 	s.sessionManager.SetWorkspaces(newWorkspaces)
 	s.config.Workspaces = newWorkspaces
 

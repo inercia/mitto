@@ -198,6 +198,31 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 		}
 	}
 
+	for i, ws := range req.Workspaces {
+		if ws.HiddenModels == nil {
+			continue
+		}
+		name := ws.Name
+		if name == "" {
+			name = ws.WorkingDir
+		}
+		if err := configPkg.ValidateHiddenModels(name, ws.HiddenModels); err != nil {
+			details := map[string]interface{}{"workspace": name}
+			message := fmt.Sprintf("workspace %q: %s", name, err.Error())
+			var hmErr *configPkg.HiddenModelValidationError
+			if errors.As(err, &hmErr) {
+				details["field"] = fmt.Sprintf("workspaces[%d].hidden_models[%d]", i, hmErr.Index)
+				details["rule"] = hmErr.Rule
+				message = fmt.Sprintf("workspace %q: %s: %s", name, details["field"], hmErr.Message)
+			}
+			return &configValidationError{
+				StatusCode: http.StatusBadRequest,
+				Message:    message,
+				Details:    details,
+			}
+		}
+	}
+
 	if req.ModelShortcuts != nil {
 		if err := configPkg.ValidateModelShortcuts(*req.ModelShortcuts); err != nil {
 			validationErr := &configValidationError{

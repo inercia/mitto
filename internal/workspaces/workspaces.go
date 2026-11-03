@@ -174,6 +174,10 @@ type WorkspaceSettings struct {
 	// The ACP server is part of each key so overrides never leak across agents.
 	// This is per-workspace data and is intentionally not hoisted into folders.json.
 	ModelOverrides ModelOverrides `json:"model_overrides,omitempty" yaml:"model_overrides,omitempty"`
+	// HiddenModels is an ordered list of RE2 patterns, matched case-insensitively
+	// against model IDs and names, that hides models in this workspace. Per-workspace
+	// data, intentionally not hoisted into folders.json.
+	HiddenModels []string `json:"hidden_models,omitempty" yaml:"hidden_models,omitempty"`
 	// IsDefault marks this workspace as the default for its working directory.
 	// When multiple workspaces share the same folder (e.g. different ACP servers
 	// or model variants), the one with IsDefault set is preferred when a workspace

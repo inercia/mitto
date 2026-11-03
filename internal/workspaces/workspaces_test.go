@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/prompts"
+	"gopkg.in/yaml.v3"
 )
 
 // ---- WorkspaceSettings AuxiliaryModelSelection tests ----
@@ -74,6 +76,52 @@ func TestWorkspaceSettings_ModelOverrides_JSONRoundTripAndLookup(t *testing.T) {
 	var nilWorkspace *WorkspaceSettings
 	if modelID, ok := nilWorkspace.OverrideFor("opencode", "Coding"); ok || modelID != "" {
 		t.Errorf("nil WorkspaceSettings.OverrideFor() = (%q, %v), want empty/false", modelID, ok)
+	}
+}
+
+func TestWorkspaceSettings_HiddenModels_JSONRoundTripAndOmitempty(t *testing.T) {
+	w := WorkspaceSettings{ACPServer: "opencode", WorkingDir: "/proj", HiddenModels: []string{"^beta$", "gpt-4"}}
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got WorkspaceSettings
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(got.HiddenModels) != 2 || got.HiddenModels[0] != "^beta$" || got.HiddenModels[1] != "gpt-4" {
+		t.Fatalf("HiddenModels round-trip = %v, want %v", got.HiddenModels, w.HiddenModels)
+	}
+
+	empty, err := json.Marshal(WorkspaceSettings{ACPServer: "opencode", WorkingDir: "/proj"})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(empty), "hidden_models") {
+		t.Errorf("empty HiddenModels serialized: %s", empty)
+	}
+}
+
+func TestWorkspaceSettings_HiddenModels_YAMLRoundTripAndOmitempty(t *testing.T) {
+	w := WorkspaceSettings{ACPServer: "opencode", WorkingDir: "/proj", HiddenModels: []string{"^beta$"}}
+	data, err := yaml.Marshal(w)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	var got WorkspaceSettings
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	if len(got.HiddenModels) != 1 || got.HiddenModels[0] != "^beta$" {
+		t.Fatalf("HiddenModels round-trip = %v, want %v", got.HiddenModels, w.HiddenModels)
+	}
+
+	empty, err := yaml.Marshal(WorkspaceSettings{ACPServer: "opencode", WorkingDir: "/proj"})
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if strings.Contains(string(empty), "hidden_models") {
+		t.Errorf("empty HiddenModels serialized: %s", empty)
 	}
 }
 
