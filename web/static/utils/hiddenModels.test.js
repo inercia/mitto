@@ -3,6 +3,7 @@ import {
   hiddenModelsToRows,
   isHiddenModelErrorCurrent,
   mapHiddenModelError,
+  parseHiddenModelField,
   serializeHiddenModels,
 } from "./hiddenModels.js";
 
@@ -167,5 +168,34 @@ describe("U6 acceptance edge cases (mitto-69t.5)", () => {
     expect(isHiddenModelErrorCurrent(noRules, ["a", "b", "(x"])).toBe(false);
     expect(isHiddenModelErrorCurrent(hit, ["a", "b", "(x"])).toBe(true);
     expect(isHiddenModelErrorCurrent(hit, ["a", "b", "(y"])).toBe(false);
+  });
+
+  test("workspaces prefix maps workspaces[i].hidden_models[j]", () => {
+    const err = {
+      message: "m",
+      details: { field: "workspaces[1].hidden_models[0]", message: "bad" },
+    };
+    const hit = mapHiddenModelError(err, 1, [3], ["(x"], "workspaces");
+    expect(hit).toEqual({ rowIndex: 3, message: "bad", rowValue: "(x" });
+    expect(mapHiddenModelError(err, 0, [3], ["(x"], "workspaces")).toBeNull();
+    expect(
+      mapHiddenModelError(err, 1, [3], ["(x"], "acp_servers"),
+    ).toBeNull();
+  });
+});
+
+describe("parseHiddenModelField", () => {
+  test("parses both prefixes and rejects others", () => {
+    expect(parseHiddenModelField("acp_servers[2].hidden_models[4]")).toEqual({
+      index: 2,
+      rowIndex: 4,
+    });
+    expect(
+      parseHiddenModelField("workspaces[0].hidden_models[1]", "workspaces"),
+    ).toEqual({ index: 0, rowIndex: 1 });
+    expect(
+      parseHiddenModelField("workspaces[0].hidden_models[1]"),
+    ).toBeNull();
+    expect(parseHiddenModelField(undefined)).toBeNull();
   });
 });

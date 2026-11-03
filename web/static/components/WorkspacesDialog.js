@@ -491,6 +491,7 @@ export function WorkspacesDialog({
     editAutoApprove,
     editIsDefault,
     editAcpCommandOverride,
+    editHiddenModels,
     setEditAcpServer,
     setEditAuxModelProfile,
     setEditAuxModelTag,
@@ -503,6 +504,7 @@ export function WorkspacesDialog({
     setEditAutoApprove,
     setEditIsDefault,
     setEditAcpCommandOverride,
+    setEditHiddenModels,
     applyWorkspaceEdits,
   } = useWorkspaceEdits({
     selectedWorkspace,
@@ -511,6 +513,30 @@ export function WorkspacesDialog({
     getWorkspaceKey,
     prevSelectedWorkspaceKeyRef,
   });
+
+  // Per-workspace hidden-models row error, keyed by getWorkspaceKey(ws):
+  // { rowIndex, message }. Owned by the shell, populated by save handling in
+  // useWorkspacesSaveCoordinator (backend field `workspaces[<i>].hidden_models[<j>]`),
+  // cleared wholesale on a successful save and per-workspace on edit.
+  const [wsHiddenModelsErrors, setWsHiddenModelsErrors] = useState({});
+  // Save-outcome guards: a newer save or a newer edit must never be
+  // overwritten by a stale validation response (mirrors SettingsDialog).
+  const hiddenModelsSaveSeqRef = useRef(0);
+  const latestEditHiddenModelsRef = useRef([]);
+  latestEditHiddenModelsRef.current = editHiddenModels;
+  const clearWsHiddenModelsError = (key) =>
+    setWsHiddenModelsErrors((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  // Editing a workspace's hidden-model rows clears any pending save error for
+  // that workspace (no-op when the error map has no entry for it).
+  const setEditHiddenModelsForWs = (list) => {
+    setEditHiddenModels(list);
+    clearWsHiddenModelsError(selectedWorkspaceKey);
+  };
 
   // Legacy raw matchMode/pattern constraint for the auxiliary model, if any,
   // and whether it's shown as a disabled "Custom (legacy)" dropdown option
@@ -730,6 +756,10 @@ export function WorkspacesDialog({
     groupedWorkspaces,
     workspaces,
     editIsDefault,
+    editHiddenModels,
+    hiddenModelsSaveSeqRef,
+    latestEditHiddenModelsRef,
+    setWsHiddenModelsErrors,
     applyWorkspaceEdits,
     getWorkspaceKey,
     applyFolderEdits,
@@ -945,6 +975,9 @@ export function WorkspacesDialog({
                   editModelOverrides=${editModelOverrides}
                   setEditModelOverrides=${setEditModelOverrides}
                   onModelOverridesValidityChange=${setModelOverridesValid}
+                  editHiddenModels=${editHiddenModels}
+                  setEditHiddenModels=${setEditHiddenModelsForWs}
+                  hiddenModelsError=${wsHiddenModelsErrors[selectedWorkspaceKey]}
                   modelsData=${modelsData}
                   modelsLoading=${modelsLoading}
                   modelsError=${modelsError}

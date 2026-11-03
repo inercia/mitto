@@ -1705,22 +1705,29 @@ describe("Models group and Hide Models rows (mitto-69t.5 U2)", () => {
     );
     expect(src).toContain("Initial Model (optional)");
     expect(src).toContain("<${HideModelsRows}");
+    expect(src).toContain('from "./HideModelsRows.js"');
   });
 
   test("rows have accessible labels, alert errors and Add/Remove", () => {
-    expect(src).toContain("Hide models rule ${i + 1} for ${serverName}");
-    expect(src).toContain("Remove hide models rule ${i + 1}");
-    expect(src).toContain('role="alert"');
-    expect(src).toContain("aria-describedby");
-    expect(src).toContain("aria-invalid");
-    expect(src).toContain(".*Terra.*");
+    const rowsSrc = readFileSync(
+      new URL("./HideModelsRows.js", import.meta.url),
+      "utf8",
+    );
+    expect(rowsSrc).toContain("Hide models rule ${i + 1} for ${ownerName}");
+    expect(rowsSrc).toContain("Remove hide models rule ${i + 1}");
+    expect(rowsSrc).toContain('role="alert"');
+    expect(rowsSrc).toContain("aria-describedby");
+    expect(rowsSrc).toContain("aria-invalid");
+    expect(rowsSrc).toContain(".*Terra.*");
   });
 
   test("uses U1 helper, no JS regex validation, no trimming", () => {
-    expect(src).toContain("hiddenModelsToRows");
-    const start = src.indexOf("function HideModelsRows");
-    const end = src.indexOf("function ServerEditForm");
-    const body = src.slice(start, end);
+    const rowsSrc = readFileSync(
+      new URL("./HideModelsRows.js", import.meta.url),
+      "utf8",
+    );
+    expect(rowsSrc).toContain("hiddenModelsToRows");
+    const body = rowsSrc;
     expect(body).not.toContain("new RegExp");
     expect(body).not.toContain(".trim(");
   });
@@ -1942,12 +1949,16 @@ describe("U6: Hide Models acceptance audit (mitto-69t.5)", () => {
   );
 
   test("row controls expose accessible Add/input/Remove/error attributes", () => {
-    expect(src).toContain("Add hide models rule for ${serverName}");
-    expect(src).toContain("Remove hide models rule ${i + 1}");
-    expect(src).toContain("Hide models rule ${i + 1} for ${serverName}");
-    expect(src).toContain('role="alert"');
-    expect(src).toContain("aria-invalid");
-    expect(src).toContain("aria-describedby");
+    const rowsSrc = readFileSync(
+      new URL("./HideModelsRows.js", import.meta.url),
+      "utf8",
+    );
+    expect(rowsSrc).toContain("Add hide models rule for ${ownerName}");
+    expect(rowsSrc).toContain("Remove hide models rule ${i + 1}");
+    expect(rowsSrc).toContain("Hide models rule ${i + 1} for ${ownerName}");
+    expect(rowsSrc).toContain('role="alert"');
+    expect(rowsSrc).toContain("aria-invalid");
+    expect(rowsSrc).toContain("aria-describedby");
   });
 
   test("emitChange preserves hidden models draft and passes per-server error", () => {

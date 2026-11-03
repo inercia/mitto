@@ -3,11 +3,12 @@ const { useState, useEffect, useMemo, useRef, html } = window.preact;
 
 // Import utilities
 import {
-  hiddenModelsToRows,
   serializeHiddenModels,
   mapHiddenModelError,
   isHiddenModelErrorCurrent,
+  parseHiddenModelField,
 } from "../utils/hiddenModels.js";
+import { HideModelsRows } from "./HideModelsRows.js";
 import {
   apiUrl,
   hasNativeFolderPicker,
@@ -762,86 +763,6 @@ export function RunnerRestrictionsEditor({
 }
 
 /**
- * Hide Models rule rows: one regex per row. Draft rows only; serialization
- * and validation are authoritative on the backend (no JS regex engine).
- */
-function HideModelsRows({ serverName, hiddenModels, error, onChange }) {
-  const nextId = useRef(0);
-  const addRef = useRef(null);
-  const makeRows = (list) =>
-    hiddenModelsToRows(list).map((value) => ({ id: nextId.current++, value }));
-  const [rows, setRows] = useState(() => makeRows(hiddenModels));
-  const update = (next) => {
-    setRows(next);
-    onChange(next.map((r) => r.value));
-  };
-  const errId = (id) => `hide-models-error-${serverName}-${id}`;
-  return html`
-    <div class="mt-3" data-testid="hide-models">
-      <label class="label">Hide Models (optional)</label>
-      <p class="text-xs text-mitto-text-muted mb-2">
-        Each row is one regular expression (Go/RE2). A model is hidden when any
-        rule matches its model ID or display name, case-insensitively. Commas
-        and regex syntax are literal parts of the rule, not separators. For
-        example, <code>.*Terra.*</code> matches Terra in the model ID or display
-        name.
-      </p>
-      ${rows.map((row, i) => {
-        const hasErr = error && error.rowIndex === i;
-        return html`
-          <div key=${row.id} class="mb-2">
-            <div class="flex items-center gap-2">
-              <input
-                type="text"
-                class="input input-bordered input-sm flex-1"
-                value=${row.value}
-                aria-label=${`Hide models rule ${i + 1} for ${serverName}`}
-                aria-invalid=${hasErr ? "true" : "false"}
-                aria-describedby=${hasErr ? errId(row.id) : undefined}
-                onInput=${(e) =>
-                  update(
-                    rows.map((r) =>
-                      r.id === row.id ? { ...r, value: e.target.value } : r,
-                    ),
-                  )}
-              />
-              <button
-                type="button"
-                class="btn btn-ghost btn-sm"
-                aria-label=${`Remove hide models rule ${i + 1}`}
-                onClick=${() => {
-                  update(rows.filter((r) => r.id !== row.id));
-                  if (addRef.current) addRef.current.focus();
-                }}
-              >
-                Remove
-              </button>
-            </div>
-            ${hasErr &&
-            html`<p
-              id=${errId(row.id)}
-              role="alert"
-              class="text-xs text-error mt-1"
-            >
-              ${error.message}
-            </p>`}
-          </div>
-        `;
-      })}
-      <button
-        type="button"
-        ref=${addRef}
-        class="btn btn-outline btn-sm"
-        aria-label=${`Add hide models rule for ${serverName}`}
-        onClick=${() => update([...rows, { id: nextId.current++, value: "" }])}
-      >
-        Add rule
-      </button>
-    </div>
-  `;
-}
-
-/**
  * Helper component for editing a server inline
  * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
@@ -1063,7 +984,7 @@ function ServerEditForm({
           })()}
         </div>
         <${HideModelsRows}
-          serverName=${server.name}
+          ownerName=${server.name}
           hiddenModels=${server.hidden_models}
           error=${hiddenModelsError}
           onChange=${(list) => {
@@ -3338,14 +3259,12 @@ export function SettingsDialog({
       onSave?.();
     } catch (err) {
       setError(errorMessage(err, "Failed to save configuration"));
-      const fieldMatch = /^acp_servers\[(\d+)\]\.hidden_models\[\d+\]$/.exec(
-        err?.details?.field || "",
-      );
-      const snap = fieldMatch ? submittedHidden[Number(fieldMatch[1])] : null;
+      const parsed = parseHiddenModelField(err?.details?.field, "acp_servers");
+      const snap = parsed ? submittedHidden[parsed.index] : null;
       if (snap && saveSeqRef.current === mySaveSeq) {
         const mapped = mapHiddenModelError(
           err,
-          Number(fieldMatch[1]),
+          parsed.index,
           snap.rowIndexes,
           snap.rules,
         );

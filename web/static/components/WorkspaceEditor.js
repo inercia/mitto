@@ -7,7 +7,7 @@
 // button continue to operate unchanged.
 const { useState, useEffect, useRef, html } = window.preact;
 
-import { copyToClipboard } from "../lib.js";
+import { copyToClipboard, getBasename } from "../lib.js";
 
 import {
   SpinnerIcon,
@@ -21,6 +21,7 @@ import {
 import { RunnerRestrictionsEditor } from "./SettingsDialog.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
 import { ModelTagSelect, collectModelTags } from "./ModelTagSelect.js";
+import { HideModelsRows } from "./HideModelsRows.js";
 import {
   modelCatalogOptions,
   expandModelOverrideGroups,
@@ -498,6 +499,14 @@ export function WorkspaceEditor({
   editModelOverrides = [],
   setEditModelOverrides,
   onModelOverridesValidityChange,
+  // Hide Models (optional) draft rows — raw rows [{id, value}] seeded by
+  // useWorkspaceEdits from the selected workspace's hidden_models; shell-owned
+  // like the other edit* fields (mitto-zu4.4).
+  editHiddenModels = [],
+  setEditHiddenModels,
+  // Per-workspace validation error from the last save attempt (see
+  // useWorkspacesSaveCoordinator), keyed display handled by the shell.
+  hiddenModelsError,
   modelsData,
   modelsLoading,
   modelsError,
@@ -538,6 +547,14 @@ export function WorkspaceEditor({
   // Notifications
   showToast,
 }) {
+  // Same display name used to group workspaces in the tree (see
+  // WorkspacesDialog groupedWorkspaces): custom name, else basename of the
+  // working directory. Used as the ownerName in the hide-models editor.
+  const wsOwnerName =
+    selectedWorkspace?.name ||
+    (selectedWorkspace?.working_dir
+      ? getBasename(selectedWorkspace.working_dir)
+      : "New Workspace");
   return html`
     <!-- Workspace tab bar (daisyUI radio tabs-border) -->
     <div role="tablist" class="tabs tabs-border px-4 shrink-0">
@@ -734,18 +751,28 @@ export function WorkspaceEditor({
       <!-- Workspace Models tab -->
       ${activeTab === "models" &&
       html`<${WorkspaceModelOverridesEditor}
-        selectedWorkspace=${selectedWorkspace}
-        getWorkspaceKey=${getWorkspaceKey}
-        editAcpServer=${editAcpServer}
-        editModelOverrides=${editModelOverrides}
-        setEditModelOverrides=${setEditModelOverrides}
-        modelProfiles=${modelProfiles}
-        modelsData=${modelsData}
-        modelsLoading=${modelsLoading}
-        modelsError=${modelsError}
-        loadModels=${loadModels}
-        onValidityChange=${onModelOverridesValidityChange}
-      />`}
+          selectedWorkspace=${selectedWorkspace}
+          getWorkspaceKey=${getWorkspaceKey}
+          editAcpServer=${editAcpServer}
+          editModelOverrides=${editModelOverrides}
+          setEditModelOverrides=${setEditModelOverrides}
+          modelProfiles=${modelProfiles}
+          modelsData=${modelsData}
+          modelsLoading=${modelsLoading}
+          modelsError=${modelsError}
+          loadModels=${loadModels}
+          onValidityChange=${onModelOverridesValidityChange}
+        />
+        <!-- Hide Models (optional): per-workspace rules shared with the agent
+             editor (HideModelsRows). key= remounts the row state when the
+             selection changes, since rows are seeded from props once. -->
+        <${HideModelsRows}
+          key=${getWorkspaceKey(selectedWorkspace)}
+          ownerName=${wsOwnerName}
+          hiddenModels=${editHiddenModels}
+          error=${hiddenModelsError}
+          onChange=${setEditHiddenModels}
+        />`}
 
       <!-- Workspace Runner tab -->
       ${activeTab === "runner" &&

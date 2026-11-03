@@ -16,6 +16,12 @@ const { useCallback } = window.preact;
 import { fetchConfig, invalidateConfigCache } from "../utils/index.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorMessage } from "../utils/sdkErrors.js";
+import {
+  serializeHiddenModels,
+  mapHiddenModelError,
+  isHiddenModelErrorCurrent,
+  parseHiddenModelField,
+} from "../utils/hiddenModels.js";
 
 export function useWorkspacesSaveCoordinator({
   // Selection
@@ -26,8 +32,13 @@ export function useWorkspacesSaveCoordinator({
   workspaces,
   // Workspace-level edits
   editIsDefault,
+  editHiddenModels,
   applyWorkspaceEdits,
   getWorkspaceKey,
+  // Hide Models per-workspace error state (keyed by workspace key)
+  hiddenModelsSaveSeqRef,
+  latestEditHiddenModelsRef,
+  setWsHiddenModelsErrors,
   // Folder-level edits
   applyFolderEdits,
   // Metadata persistence (from useFolderMetadataConfig)
@@ -56,6 +67,8 @@ export function useWorkspacesSaveCoordinator({
       setError("Please select a folder for the new workspace before saving");
       return;
     }
+    const mySaveSeq = ++hiddenModelsSaveSeqRef.current;
+    let hiddenSnapshot = null;
     setSaving(true);
     const saveStartTime = Date.now();
     setError("");
@@ -79,6 +92,20 @@ export function useWorkspacesSaveCoordinator({
       // Apply workspace-level edits if a workspace is selected
       if (selectedWorkspaceKey) {
         updated = updated.map(applyWorkspaceEdits);
+        // Snapshot the submitted rules against the exact `workspaces[]` index
+        // the backend validates (post-filter, post-edit array).
+        const index = updated.findIndex(
+          (ws) => getWorkspaceKey(ws) === selectedWorkspaceKey,
+        );
+        if (index >= 0) {
+          const { rules, rowIndexes } = serializeHiddenModels(editHiddenModels);
+          hiddenSnapshot = {
+            index,
+            key: selectedWorkspaceKey,
+            rules,
+            rowIndexes,
+          };
+        }
 
         // Enforce a single default workspace per folder: if the selected workspace
         // was marked default, clear is_default on the other workspaces in the same folder.
@@ -111,7 +138,15 @@ export function useWorkspacesSaveCoordinator({
           prompts: [],
         });
       } catch (err) {
-        throw new Error(errorMessage(err, "Failed to save configuration"));
+        // Rethrow with the message normalized for the shared error banner,
+        // but carry the original details through so the outer catch can map
+        // backend hidden-model field paths (`workspaces[i].hidden_models[j]`)
+        // to the matching draft row.
+        const wrapped = new Error(
+          errorMessage(err, "Failed to save configuration"),
+        );
+        wrapped.details = err?.details;
+        throw wrapped;
       }
       invalidateConfigCache();
 
@@ -161,6 +196,7 @@ export function useWorkspacesSaveCoordinator({
 
       setWorkspaces(updated);
       setNewFolderKey(null);
+      setWsHiddenModelsErrors({});
       onSave?.();
       showToast?.({
         style: "success",
@@ -169,6 +205,33 @@ export function useWorkspacesSaveCoordinator({
       });
     } catch (err) {
       setError(err.message);
+      const parsed = parseHiddenModelField(
+        err?.details?.field,
+        "workspaces",
+      );
+      if (
+        hiddenSnapshot &&
+        parsed &&
+        parsed.index === hiddenSnapshot.index &&
+        hiddenModelsSaveSeqRef.current === mySaveSeq
+      ) {
+        const mapped = mapHiddenModelError(
+          err,
+          hiddenSnapshot.index,
+          hiddenSnapshot.rowIndexes,
+          hiddenSnapshot.rules,
+          "workspaces",
+        );
+        if (
+          mapped &&
+          isHiddenModelErrorCurrent(mapped, latestEditHiddenModelsRef.current)
+        ) {
+          setWsHiddenModelsErrors((prev) => ({
+            ...prev,
+            [hiddenSnapshot.key]: mapped,
+          }));
+        }
+      }
     } finally {
       const elapsed = Date.now() - saveStartTime;
       const remaining = Math.max(0, 1000 - elapsed);
@@ -183,7 +246,11 @@ export function useWorkspacesSaveCoordinator({
     workspaces,
     editIsDefault,
     applyWorkspaceEdits,
+    editHiddenModels,
     getWorkspaceKey,
+    hiddenModelsSaveSeqRef,
+    latestEditHiddenModelsRef,
+    setWsHiddenModelsErrors,
     applyFolderEdits,
     persistMetadata,
     persistUserDataSchema,

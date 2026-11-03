@@ -12,6 +12,11 @@
 //   - populate + flush effect keyed on [selectedWorkspaceKey]
 const { useState, useEffect, useCallback } = window.preact;
 
+import {
+  hiddenModelsToRows,
+  serializeHiddenModels,
+} from "../utils/hiddenModels.js";
+
 export function useWorkspaceEdits({
   selectedWorkspace,
   selectedWorkspaceKey,
@@ -32,6 +37,8 @@ export function useWorkspaceEdits({
   const [editInitialModelProfile, setEditInitialModelProfile] = useState("");
   const [editInitialModelTag, setEditInitialModelTag] = useState("");
   const [editModelOverrides, setEditModelOverrides] = useState([]);
+  // Raw Hide Models draft rows (blanks kept); serialized at save time.
+  const [editHiddenModels, setEditHiddenModels] = useState([]);
   const [editRunner, setEditRunner] = useState("exec");
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
@@ -69,6 +76,8 @@ export function useWorkspaceEdits({
           );
           return savedOverrides.length ? savedOverrides : undefined;
         })(),
+        // Always explicit: `[]` clears persisted rules, nil would preserve them.
+        hidden_models: serializeHiddenModels(editHiddenModels).rules,
         restricted_runner: editRunner,
         restricted_runner_config:
           editRunner !== "exec" ? editRunnerConfig : undefined,
@@ -86,6 +95,7 @@ export function useWorkspaceEdits({
       editInitialModelProfile,
       editInitialModelTag,
       editModelOverrides,
+      editHiddenModels,
       editRunner,
       editRunnerConfig,
       editAutoApprove,
@@ -129,6 +139,7 @@ export function useWorkspaceEdits({
         ? selectedWorkspace.model_overrides.map((override) => ({ ...override }))
         : [],
     );
+    setEditHiddenModels(hiddenModelsToRows(selectedWorkspace.hidden_models));
     setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
@@ -147,6 +158,7 @@ export function useWorkspaceEdits({
     editInitialModelProfile,
     editInitialModelTag,
     editModelOverrides,
+    editHiddenModels,
     editRunner,
     editRunnerConfig,
     editAutoApprove,
@@ -159,6 +171,7 @@ export function useWorkspaceEdits({
     setEditInitialModelProfile,
     setEditInitialModelTag,
     setEditModelOverrides,
+    setEditHiddenModels,
     setEditRunner,
     setEditRunnerConfig,
     setEditAutoApprove,

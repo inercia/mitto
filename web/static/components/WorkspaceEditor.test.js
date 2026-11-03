@@ -508,6 +508,116 @@ if (process.env.MITTO_WORKSPACE_EDITOR_TEST_CHILD === "1") {
       }
     });
   });
+
+  describe("Hide Models (optional) editor (mitto-zu4.4)", () => {
+    const change = (element, value) => {
+      element.value = value;
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    test("renders below the overrides editor for the workspace owner, seeded once", async () => {
+      const draft = mountDraft({
+        editHiddenModels: [" .*Terra.* ", ""],
+        hiddenModelsError: null,
+      });
+      try {
+        await settle();
+        const section = draft.container.querySelector(
+          '[data-testid="hide-models"]',
+        );
+        expect(section).not.toBeNull();
+        // Below the Model Overrides editor (same tab, same condition).
+        const overrides = draft.container.querySelector(
+          '[data-testid^="ws-model-override-model-"]',
+        );
+        expect(overrides.compareDocumentPosition(section) &
+          Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        const inputs = section.querySelectorAll('input[type="text"]');
+        expect(inputs).toHaveLength(2);
+        expect(inputs[0].value).toBe(" .*Terra.* ");
+        expect(inputs[0].getAttribute("aria-label")).toBe(
+          "Hide models rule 1 for New Workspace",
+        );
+      } finally {
+        unmount(draft.container);
+      }
+    });
+
+    test("typing a rule calls setEditHiddenModels with the raw draft", async () => {
+      const draft = mountDraft({ editHiddenModels: ["a"], setEditHiddenModels: jest.fn() });
+      try {
+        await settle();
+        change(
+          draft.container.querySelector('[data-testid="hide-models"] input'),
+          ".*Terra.*",
+        );
+        await settle();
+        expect(draft.props.setEditHiddenModels).toHaveBeenLastCalledWith([
+          ".*Terra.*",
+        ]);
+      } finally {
+        unmount(draft.container);
+      }
+    });
+
+    test("add appends an empty row and remove calls back with remaining values", async () => {
+      const draft = mountDraft({
+        editHiddenModels: ["x", "y"],
+        setEditHiddenModels: jest.fn(),
+      });
+      try {
+        await settle();
+        const section = draft.container.querySelector(
+          '[data-testid="hide-models"]',
+        );
+        const add = [...section.querySelectorAll("button")].find(
+          (b) => b.textContent.trim() === "Add rule",
+        );
+        add.click();
+        await settle();
+        expect(draft.props.setEditHiddenModels).toHaveBeenLastCalledWith([
+          "x",
+          "y",
+          "",
+        ]);
+        const remove = [...section.querySelectorAll("button")].find((b) =>
+          b.getAttribute("aria-label").startsWith("Remove hide models rule 1"),
+        );
+        remove.click();
+        await settle();
+        expect(draft.props.setEditHiddenModels).toHaveBeenLastCalledWith(["y", ""]);
+      } finally {
+        unmount(draft.container);
+      }
+    });
+
+    test("backend row error renders on the current row", async () => {
+      const draft = mountDraft({
+        editHiddenModels: ["(bad", "ok"],
+        setEditHiddenModels: jest.fn(),
+        hiddenModelsError: { rowIndex: 0, message: "bad RE2 pattern", rowValue: "(bad" },
+      });
+      try {
+        await settle();
+        const section = draft.container.querySelector(
+          '[data-testid="hide-models"]',
+        );
+        const alert = section.querySelector('p[role="alert"]');
+        expect(alert.textContent).toBe("bad RE2 pattern");
+        const firstInput = section.querySelectorAll('input[type="text"]')[0];
+        expect(firstInput.getAttribute("aria-invalid")).toBe("true");
+        // Editing the errored row calls back with the raw draft rows.
+        change(firstInput, ".*Terra.*");
+        await settle();
+        expect(draft.props.setEditHiddenModels).toHaveBeenLastCalledWith([
+          ".*Terra.*",
+          "ok",
+        ]);
+      } finally {
+        unmount(draft.container);
+      }
+    });
+  });
 } else {
   describe("WorkspaceEditor", () => {
     test("passes mounted Models-tab tests", () => {

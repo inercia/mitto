@@ -10,6 +10,7 @@
 import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 /**
  * Duplicated from WorkspacesDialog.js for testing (the component imports
@@ -1057,3 +1058,97 @@ if (expandSelectedChildRun) {
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// mitto-zu4.4: workspace-level Hide Models editor wiring — source audit.
+//
+// The dialog/hook components import window.preact globals and cannot be
+// mounted directly under this test file's jsdom globals (mirroring the
+// Audit phase pattern used for SettingsDialog mitto-69t.5 U2/U3/U4), so the
+// wiring is verified by source-string checks; the shared behaviors (helper
+// semantics, save coordination, mounted editor rendering) are covered by
+// hiddenModels.test.js, useWorkspacesSaveCoordinator.test.js and
+// WorkspaceEditor.test.js respectively.
+// ---------------------------------------------------------------------------
+
+describe("Hide Models workspace wiring (mitto-zu4.4)", () => {
+  const dlgSrc = readFileSync(
+    new URL("./WorkspacesDialog.js", import.meta.url),
+    "utf8",
+  );
+  const editorSrc = readFileSync(
+    new URL("./WorkspaceEditor.js", import.meta.url),
+    "utf8",
+  );
+  const editsSrc = readFileSync(
+    new URL("../hooks/useWorkspaceEdits.js", import.meta.url),
+    "utf8",
+  );
+
+  test("dialog destructures hidden-model drafts from useWorkspaceEdits", () => {
+    expect(editsSrc).toContain("import {\n  hiddenModelsToRows,\n  serializeHiddenModels,\n} from \"../utils/hiddenModels.js\";");
+    // Raw draft rows seeded from the workspace's saved list on populate.
+    expect(editsSrc).toContain(
+      "setEditHiddenModels(hiddenModelsToRows(selectedWorkspace.hidden_models));",
+    );
+    // Serializes on save: always explicit ([] clears), untouched workspaces
+    // pass through without the key (buildWorkspaceEditsFor target-only).
+    expect(dlgSrc).toContain("editHiddenModels,\n    setEditAcpServer,");
+    expect(dlgSrc).toContain(
+      "setEditHiddenModels,\n    applyWorkspaceEdits,\n  } = useWorkspaceEdits({",
+    );
+    expect(editsSrc).toContain(
+      "hidden_models: serializeHiddenModels(editHiddenModels).rules",
+    );
+  });
+
+  test("dialog owns the per-workspace error map mirroring the Settings pattern", () => {
+    expect(dlgSrc).toContain(
+      "const [wsHiddenModelsErrors, setWsHiddenModelsErrors] = useState({});",
+    );
+    expect(dlgSrc).toContain("const hiddenModelsSaveSeqRef = useRef(0);");
+    expect(dlgSrc).toContain("const latestEditHiddenModelsRef = useRef([]);");
+    expect(dlgSrc).toContain(
+      "latestEditHiddenModelsRef.current = editHiddenModels;",
+    );
+    // Clear is a no-op when the key is absent, deleting key otherwise
+    // (mirrors SettingsDialog.clearHiddenModelsError).
+    expect(dlgSrc).toContain("const clearWsHiddenModelsError = (key) =>");
+    expect(dlgSrc).toContain("delete next[key];");
+    // Editing rows clears the pending save error for that workspace only.
+    expect(dlgSrc).toContain("const setEditHiddenModelsForWs = (list) => {");
+    expect(dlgSrc).toContain("clearWsHiddenModelsError(selectedWorkspaceKey);");
+  });
+
+  test("dialog hands coordination state to the save coordinator", () => {
+    expect(dlgSrc).toContain(
+      "editHiddenModels,\n    hiddenModelsSaveSeqRef,\n    latestEditHiddenModelsRef,\n    setWsHiddenModelsErrors,\n    applyWorkspaceEdits,",
+    );
+  });
+
+  test("dialog threads drafts + per-workspace error into WorkspaceEditor", () => {
+    expect(dlgSrc).toContain("editHiddenModels=${editHiddenModels}");
+    expect(dlgSrc).toContain("setEditHiddenModels=${setEditHiddenModelsForWs}");
+    expect(dlgSrc).toContain(
+      "hiddenModelsError=${wsHiddenModelsErrors[selectedWorkspaceKey]}",
+    );
+  });
+
+  test("WorkspaceEditor renders the shared rows editor in the Models tab", () => {
+    expect(editorSrc).toContain(
+      'import { HideModelsRows } from "./HideModelsRows.js";',
+    );
+    // ownerName uses the tree grouping display name: custom name, else
+    // basename of working_dir; "New Workspace" fallback for unsaved rows.
+    expect(editorSrc).toContain("const wsOwnerName =");
+    expect(editorSrc).toContain(
+      "getBasename(selectedWorkspace.working_dir)",
+    );
+    expect(editorSrc).toContain('"New Workspace"');
+    expect(editorSrc).toContain("<${HideModelsRows}");
+    expect(editorSrc).toContain("key=${getWorkspaceKey(selectedWorkspace)}");
+    expect(editorSrc).toContain("ownerName=${wsOwnerName}");
+    expect(editorSrc).toContain("error=${hiddenModelsError}");
+    expect(editorSrc).toContain("onChange=${setEditHiddenModels}");
+  });
+});
