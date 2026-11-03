@@ -4028,6 +4028,9 @@ export function useWebSocket({
       if (opts.arguments && Object.keys(opts.arguments).length > 0) {
         sessionBody.arguments = opts.arguments;
       }
+      if (typeof opts.rememberResponses === "boolean") {
+        sessionBody.remember_responses = opts.rememberResponses;
+      }
       const data = await getSdkClient().sessions.create(sessionBody);
 
       // Success — reset all retry state and clear busy indicator.

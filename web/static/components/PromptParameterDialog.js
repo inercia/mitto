@@ -3,12 +3,17 @@
 // Renders type-specific controls (textarea, beads selector, session selector,
 // plain text input) and calls onSubmit with the collected arguments map.
 
-const { useState, useEffect, useCallback, html, Fragment } = window.preact;
+const { useState, useEffect, useCallback, useRef, html, Fragment } = window.preact;
 
 import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { Modal } from "./Modal.js";
 import { getBasename } from "../lib.js";
+import {
+  applyRememberedValues,
+  contextualKeys,
+  resolveRememberResponses,
+} from "../utils/rememberedResponses.js";
 import { SearchIcon, SlidersIcon } from "./Icons.js";
 // mitto-uqq.4: slackChannel ParamField branch reuses the same shared Slack
 // infra as SlackSubscriptionEditor.js (mitto-uqq.2/.3) — the installation
@@ -1027,9 +1032,22 @@ export function PromptParameterDialog({
   workingDir,
   hostSessionId,
   title = "Prompt parameters",
+  promptName,
+  rememberControl = false,
   initialValues = {},
 }) {
   const [values, setValues] = useState({});
+  // Remember-responses state. Refs (not state) back the touched guards because
+  // late remembered-args responses must read the current value synchronously:
+  // `touchedKeysRef` holds fields the user edited this open, `rememberTouchedRef`
+  // whether the user toggled the checkbox, `contextualKeysRef` the non-empty
+  // initialValues (context beats remembered values). `rememberChecked` drives the
+  // footer checkbox; `savedRememberPreference` is the GET tri-state (undefined = unset).
+  const touchedKeysRef = useRef(new Set());
+  const rememberTouchedRef = useRef(false);
+  const contextualKeysRef = useRef(new Set());
+  const [rememberChecked, setRememberChecked] = useState(false);
+  const [savedRememberPreference, setSavedRememberPreference] = useState(undefined);
   const [beadsIssues, setBeadsIssues] = useState([]);
   const [loadingBeads, setLoadingBeads] = useState(false);
   const [sessions, setSessions] = useState([]);
@@ -1106,6 +1124,11 @@ export function PromptParameterDialog({
     setLoadingDirsByParam({});
     setNestedValues({});
     setLoadingRememberedByPath({});
+    touchedKeysRef.current = new Set();
+    rememberTouchedRef.current = false;
+    contextualKeysRef.current = contextualKeys(initialValues);
+    setRememberChecked(false);
+    setSavedRememberPreference(undefined);
     setLoadingBeads(false);
     setLoadingSessions(false);
     setLoadingWorkspaces(false);
@@ -1137,29 +1160,40 @@ export function PromptParameterDialog({
   // failure leaves values untouched.
   useEffect(() => {
     if (!isOpen || !workingDir) return;
-    const promptName = title;
-    if (!promptName || promptName === "Prompt parameters") return;
+    const lookupName = promptName || title;
+    if (!lookupName || lookupName === "Prompt parameters") return;
     // mitto-47y.6.2: gate also honors `remember: conversation` so the fetch
     // fires whenever any scoped-persistence mode is declared.
     const needsRemember = parameters.some(
       (p) => p.remember === "folder" || p.remember === "conversation",
     );
-    if (!needsRemember) return;
+    if (!needsRemember && !rememberControl) return;
     let cancelled = false;
     getSdkClient()
       .prompts.rememberedArgs({
         working_dir: workingDir,
-        prompt: promptName,
+        prompt: lookupName,
         session_id: hostSessionId,
       })
       .then((data) => {
         if (cancelled) return;
+        if (data && typeof data.remember_responses === "boolean") {
+          setSavedRememberPreference(data.remember_responses);
+          if (rememberControl) {
+            setRememberChecked((prev) => (rememberTouchedRef.current ? prev : data.remember_responses));
+          }
+        }
         const remembered =
           data && data.arguments && typeof data.arguments === "object"
             ? data.arguments
             : null;
         if (!remembered) return;
-        setValues((prev) => ({ ...prev, ...remembered }));
+        setValues((prev) =>
+          applyRememberedValues(prev, remembered, {
+            contextKeys: contextualKeysRef.current,
+            touchedKeys: touchedKeysRef.current,
+          }),
+        );
       })
       .catch((err) => {
         console.warn("[PromptParameterDialog] remembered-args error:", err);
@@ -1167,7 +1201,7 @@ export function PromptParameterDialog({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, workingDir, title, hostSessionId]);
+  }, [isOpen, workingDir, title, promptName, hostSessionId, rememberControl]);
 
   // Fetch beads issues when dialog opens (only if a beadsId param is present)
   useEffect(() => {
@@ -1346,7 +1380,13 @@ export function PromptParameterDialog({
   }, [isOpen, workingDir]);
 
   const handleFieldChange = useCallback((fieldName, val) => {
+    touchedKeysRef.current.add(fieldName);
     setValues((prev) => ({ ...prev, [fieldName]: val }));
+  }, []);
+
+  const handleRememberToggle = useCallback((e) => {
+    rememberTouchedRef.current = true;
+    setRememberChecked(e.target.checked === true);
   }, []);
 
   // mitto-47y.6.1: collect all currently-picked (path, promptName) pairs from
@@ -1427,6 +1467,7 @@ export function PromptParameterDialog({
             // values win). Mirrors the v1 semantics one level deeper.
             let next = prev;
             for (const [k, v] of Object.entries(remembered)) {
+              if (touchedKeysRef.current.has(`${path.join("/")}/${k}`)) continue;
               // Read current value at path.k
               let node = next;
               let existing;
@@ -1480,8 +1521,11 @@ export function PromptParameterDialog({
   // owns `innerName`; length === level of that parent picker (>= 1 for any
   // nested write). Delegates to the pure `updateNestedTree` helper.
   const handleNestedTreeChange = useCallback((path, innerName, val) => {
+    touchedKeysRef.current.add(`${path.join("/")}/${innerName}`);
     setNestedValues((prev) => updateNestedTree(prev, path, innerName, val));
   }, []);
+
+  const showRememberControl = Boolean(rememberControl && hostSessionId);
 
   const handleSubmit = useCallback(() => {
     // Build args map; omit empty optional fields.
@@ -1529,9 +1573,25 @@ export function PromptParameterDialog({
         }
       }
     }
-    onSubmit?.(args);
+    const rememberResponses = resolveRememberResponses({
+      showControl: showRememberControl,
+      touched: rememberTouchedRef.current,
+      checked: rememberChecked,
+      savedPreference: savedRememberPreference,
+    });
+    onSubmit?.(args, { rememberResponses });
     onClose?.();
-  }, [parameters, values, nestedValues, promptsList, onSubmit, onClose]);
+  }, [
+    parameters,
+    values,
+    nestedValues,
+    promptsList,
+    onSubmit,
+    onClose,
+    showRememberControl,
+    rememberChecked,
+    savedRememberPreference,
+  ]);
 
   // Save enabled only when all required params have non-empty trimmed values.
   // Boolean params are excluded: a checkbox always has a definite answer.
@@ -1551,7 +1611,30 @@ export function PromptParameterDialog({
 
   if (!isOpen) return null;
 
+  const rememberBlock = showRememberControl
+    ? html`
+        <label
+          class="flex items-center gap-2 mr-auto cursor-pointer"
+          data-testid="prompt-param-remember-label"
+        >
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            data-testid="prompt-param-remember-checkbox"
+            checked=${rememberChecked}
+            onChange=${handleRememberToggle}
+            aria-describedby="prompt-param-remember-help"
+          />
+          <span class="text-sm">Remember responses</span>
+          <span id="prompt-param-remember-help" class="text-xs opacity-70">
+            For this prompt in this conversation only.
+          </span>
+        </label>
+      `
+    : null;
+
   const footer = html`
+    ${rememberBlock}
     <button
       onClick=${onClose}
       class="btn btn-sm btn-ghost"

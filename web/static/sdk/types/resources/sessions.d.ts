@@ -6,7 +6,7 @@ export function createSessionsResource(config: import("../core/config.js").Resol
     running: (opts: any) => Promise<any>;
     get: (id: any, opts: any) => Promise<any>;
     /** @param {object} [body] - {name?, working_dir?, acp_server?, beads_issue?,
-     *   origin_prompt_name?, initial_prompt_name?, arguments?}
+     *   origin_prompt_name?, initial_prompt_name?, arguments?, remember_responses?}
      *  @param {import("../core/transport.js").RequestOptions} [opts] -
      *   forwarded to request() (e.g. headers, signal) */
     create: (body?: object, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;

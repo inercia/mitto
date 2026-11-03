@@ -619,6 +619,7 @@ function App() {
         workingDir: opts.workingDir,
         initialValues: opts.initialValues,
         hostSessionId: opts.hostSessionId,
+        rememberControl: opts.rememberControl === true,
       }),
     [],
   );
@@ -2923,9 +2924,11 @@ function App() {
           hostSessionId: sessionId,
           workingDir: targetWorkingDir,
           initialValues: autoArgs,
-          onSubmit: async (userArgs) => {
+          rememberControl: true,
+          onSubmit: async (userArgs, meta) => {
             const result = await seedConversationWithPrompt(sessionId, prompt, {
               arguments: { ...autoArgs, ...userArgs },
+              rememberResponses: meta?.rememberResponses,
             });
             if (result.success) {
               showToast({
@@ -4112,10 +4115,12 @@ function App() {
           headerWorkingDir}
           hostSessionId=${promptParamDialog?.hostSessionId ?? activeSessionId}
           title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
+          promptName=${promptParamDialog?.prompt?.name}
+          rememberControl=${promptParamDialog?.rememberControl === true}
           initialValues=${promptParamDialog?.initialValues || {}}
           onClose=${() => setPromptParamDialog(null)}
-          onSubmit=${(args) => {
-            promptParamDialog?.onSubmit?.(args);
+          onSubmit=${(args, meta) => {
+            promptParamDialog?.onSubmit?.(args, meta);
             setPromptParamDialog(null);
           }}
         />

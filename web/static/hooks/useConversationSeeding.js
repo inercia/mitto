@@ -281,13 +281,21 @@ export async function makeLoopNow(
  * Build the POST body for seeding a conversation queue with a named prompt.
  * Never includes `message` or the full prompt body.
  * @param {{ name: string }} prompt
- * @param {{ arguments?: Object }} [opts]
+ * @param {{ arguments?: Object, rememberResponses?: boolean }} [opts]
+ *   `rememberResponses` is forwarded only when explicitly boolean; omitted
+ *   leaves the backend's persisted per-conversation preference untouched.
  * @returns {Object}
  */
-export function buildSeedQueueBody(prompt, { arguments: args } = {}) {
+export function buildSeedQueueBody(
+  prompt,
+  { arguments: args, rememberResponses } = {},
+) {
   const body = { prompt_name: prompt.name };
   if (args && typeof args === "object" && Object.keys(args).length > 0) {
     body.arguments = args;
+  }
+  if (typeof rememberResponses === "boolean") {
+    body.remember_responses = rememberResponses;
   }
   return body;
 }
@@ -296,19 +304,22 @@ export function buildSeedQueueBody(prompt, { arguments: args } = {}) {
  * POST a named prompt to a session's queue.
  * @param {string} sessionId
  * @param {{ name: string }} prompt
- * @param {{ arguments?: Object, fetchImpl?: Function }} [opts]
+ * @param {{ arguments?: Object, rememberResponses?: boolean, fetchImpl?: Function }} [opts]
  * @returns {Promise<{ success: boolean, messageId?: string, error?: string }>}
  */
 export async function seedConversationWithPrompt(
   sessionId,
   prompt,
-  { arguments: args, fetchImpl } = {},
+  { arguments: args, rememberResponses, fetchImpl } = {},
 ) {
   if (!sessionId || !prompt?.name) {
     return { success: false, error: "invalid_request" };
   }
 
-  const body = buildSeedQueueBody(prompt, { arguments: args });
+  const body = buildSeedQueueBody(prompt, {
+    arguments: args,
+    rememberResponses,
+  });
 
   if (fetchImpl) {
     try {
@@ -509,7 +520,7 @@ export function useConversationSeeding({ newSession }) {
      * originPromptName is set on the session opts from prompt.name so the
      * backend can later detect duplicate singleton-prompt conversations.
      *
-     * @param {{ workingDir, acpServer, name, beadsIssue, prompt, arguments, loop, fetchImpl }} opts
+     * @param {{ workingDir, acpServer, name, beadsIssue, prompt, arguments, rememberResponses, loop, fetchImpl }} opts
      * @returns {Promise<{ sessionId: string, reused?: boolean } | { error: string }>}
      */
     async ({
@@ -519,6 +530,7 @@ export function useConversationSeeding({ newSession }) {
       beadsIssue,
       prompt,
       arguments: args,
+      rememberResponses,
       loop,
       fetchImpl,
     }) => {
@@ -534,6 +546,7 @@ export function useConversationSeeding({ newSession }) {
         // One-time path: pass the named prompt so the queue delivers it once.
         sessionOpts.initialPromptName = prompt?.name;
         sessionOpts.arguments = args;
+        sessionOpts.rememberResponses = rememberResponses;
       }
 
       const result = await newSession(sessionOpts);
