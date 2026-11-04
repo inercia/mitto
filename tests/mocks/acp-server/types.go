@@ -114,9 +114,11 @@ type SessionConfigOption struct {
 
 // SessionConfigSelectOption is one selectable value in a Select ConfigOption.
 type SessionConfigSelectOption struct {
-	Value       string  `json:"value"`
-	Name        string  `json:"name"`
-	Description *string `json:"description,omitempty"`
+	Value       string                      `json:"value,omitempty"`
+	Name        string                      `json:"name"`
+	Description *string                     `json:"description,omitempty"`
+	Group       string                      `json:"group,omitempty"`
+	Options     []SessionConfigSelectOption `json:"options,omitempty"`
 }
 
 // ResumeSessionRequest is the request to resume an existing session (v0.13.5

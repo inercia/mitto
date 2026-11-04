@@ -3208,6 +3208,9 @@ function ChatInputImpl({
                         onOpenChange=${configOpt.category === "model"
                           ? setModelMenuOpen
                           : undefined}
+                        onKeyboardSelectionFocus=${configOpt.category === "model"
+                          ? () => textareaRef.current?.focus()
+                          : undefined}
                       />
                     `,
                   )}

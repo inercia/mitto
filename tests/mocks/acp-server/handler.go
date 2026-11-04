@@ -136,7 +136,7 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 
 	s.sessionID = fmt.Sprintf("mock-session-%d", time.Now().UnixNano())
 	s.currentMode = defaultModes.CurrentModeID // Reset to default mode
-	s.currentModel = defaultModelId            // Reset to default model
+	s.currentModel = s.initialModel()          // Reset to default model
 	s.log("Created session: %s (workdir: %s, mode: %s, model: %s)", s.sessionID, workdir, s.currentMode, s.currentModel)
 
 	// Create session state with modes and the v0.13.5 model config option.
@@ -227,7 +227,9 @@ func (s *MockACPServer) freshConfigOptionsWithModel(opts []SessionConfigOption, 
 		out = append(out, opt)
 	}
 	if !foundModel {
-		out = append(out, buildModelConfigOption(modelID))
+		model := buildModelConfigOption(modelID)
+		model.Options = append([]SessionConfigSelectOption(nil), s.modelOptions()...)
+		out = append(out, model)
 	}
 	if effortOpt := s.buildEffortConfigOption(modelID, preferredEffort); effortOpt != nil {
 		out = append(out, *effortOpt)
@@ -303,7 +305,7 @@ func (s *MockACPServer) sessionModel(sessionID string) string {
 			}
 		}
 	}
-	return defaultModelId
+	return s.initialModel()
 }
 
 // handleSetSessionMode handles session mode change requests.
@@ -367,17 +369,19 @@ func (s *MockACPServer) sendCurrentModeUpdate(modeID string) error {
 // same config_option_update notification handleSetSessionConfigOption sends so
 // AgentModels().CurrentModelId stays wired up.
 func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
-	if s.forceLegacySetModel {
-		s.log("session/set_model forced to legacy fallback (MOCK_SET_MODEL_FORCE_LEGACY)")
-		return s.sendError(req.ID, -32601, "Method not found", nil)
-	}
-
 	var params SetSessionModelParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return s.sendError(req.ID, -32602, "Invalid params", nil)
 	}
+	if s.forceLegacySetModel {
+		if err := s.recordModelAttempt("set_model", params.SessionID, params.ModelID, "unsupported"); err != nil {
+			return err
+		}
+		s.log("session/set_model forced to legacy fallback (MOCK_SET_MODEL_FORCE_LEGACY)")
+		return s.sendError(req.ID, -32601, "Method not found", nil)
+	}
 
-	if err := s.applyModelChange(req, params.SessionID, params.ModelID, "set_model"); err != nil {
+	if applied, err := s.applyModelChange(req, params.SessionID, params.ModelID, "set_model"); !applied || err != nil {
 		return err
 	}
 
@@ -400,10 +404,10 @@ func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
 // applyModelChange runs the shared MOCK_SET_MODEL_FAIL_FIRST / _DELAY_MS
 // failure-injection + validation + currentModel update used by both
 // session/set_model (primary) and session/set_config_option(model) (legacy
-// fallback). Returns a non-nil error only when the caller has already sent an
-// error response and should stop (i.e. do not send a success response).
+// fallback). The boolean reports whether the change was applied; an error
+// reports a transport failure while writing a rejection.
 // rpcTag is the label used in the RPC-order log ("set_model" | "set_config_option").
-func (s *MockACPServer) applyModelChange(req JSONRPCRequest, sessionID, value, rpcTag string) error {
+func (s *MockACPServer) applyModelChange(req JSONRPCRequest, sessionID, value, rpcTag string) (bool, error) {
 	// Optional delay to simulate a slow agent (MOCK_SET_MODEL_DELAY_MS).
 	if s.setModelDelayMs > 0 {
 		time.Sleep(time.Duration(s.setModelDelayMs) * time.Millisecond)
@@ -416,21 +420,23 @@ func (s *MockACPServer) applyModelChange(req JSONRPCRequest, sessionID, value, r
 	// regardless of which wire the RPC arrives on.
 	s.setModelCallCount++
 	if s.setModelCallCount <= s.setModelFailFirst {
+		if err := s.recordModelAttempt(rpcTag, sessionID, value, "injected_failure"); err != nil {
+			return false, err
+		}
 		s.log("Injecting %s(model) failure %d/%d for value %s",
 			rpcTag, s.setModelCallCount, s.setModelFailFirst, value)
-		return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
+		return false, s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
 	}
 
 	// Validate the value against the advertised options.
-	validModel := false
-	for _, opt := range defaultModelOptions {
-		if opt.Value == value {
-			validModel = true
-			break
+	if !s.validModel(value) {
+		if err := s.recordModelAttempt(rpcTag, sessionID, value, "invalid"); err != nil {
+			return false, err
 		}
+		return false, s.sendError(req.ID, -32602, fmt.Sprintf("Invalid model: %s", value), nil)
 	}
-	if !validModel {
-		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid model: %s", value), nil)
+	if err := s.recordModelAttempt(rpcTag, sessionID, value, "applied"); err != nil {
+		return false, err
 	}
 	s.currentModel = value
 	s.mu.Lock()
@@ -441,7 +447,24 @@ func (s *MockACPServer) applyModelChange(req JSONRPCRequest, sessionID, value, r
 
 	s.recordRPCOrder(rpcTag, value)
 	s.log("Session model changed via %s: %s -> %s", rpcTag, sessionID, value)
-	return nil
+	return true, nil
+}
+
+func (s *MockACPServer) recordModelAttempt(method, sessionID, model, outcome string) error {
+	if s.modelAttemptFile == "" {
+		return nil
+	}
+	data, err := json.Marshal(map[string]string{"method": method, "session_id": sessionID, "model": model, "outcome": outcome})
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(s.modelAttemptFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(data, '\n'))
+	return err
 }
 
 // applyThoughtLevelChange handles session/set_config_option for the mock's
@@ -523,7 +546,7 @@ func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
 		// Shared model-change path: MOCK_SET_MODEL_DELAY_MS / _FAIL_FIRST
 		// knobs, model-id validation, currentModel update, RPC-order log.
 		// Emits its own error response on failure/rejection.
-		if err := s.applyModelChange(req, params.SessionID, params.Value, "set_config_option"); err != nil {
+		if applied, err := s.applyModelChange(req, params.SessionID, params.Value, "set_config_option"); !applied || err != nil {
 			return err
 		}
 	case isThoughtLevel:
@@ -591,6 +614,9 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 	s.log("Prompt received (session=%s): %s", params.SessionID, message)
 	s.recordRPCOrder("prompt", message)
 	s.recordRPCOrder("prompt_model", params.SessionID+"\t"+s.sessionModel(params.SessionID))
+	if err := s.waitPromptBarrier(message); err != nil {
+		return s.sendError(req.ID, -32603, err.Error(), nil)
+	}
 
 	// Route notifications to the correct session.
 	// When multiple sessions share this ACP process (e.g. main + auxiliary sessions),
@@ -675,6 +701,28 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 
 	// Return proper PromptResponse with stopReason (matches SDK's PromptResponse type)
 	return s.sendResponse(req.ID, PromptResponse{StopReason: "end_turn"})
+}
+
+func (s *MockACPServer) waitPromptBarrier(message string) error {
+	if s.promptBarrierMarker == "" || !strings.Contains(message, s.promptBarrierMarker) {
+		return nil
+	}
+	if s.promptBarrierReady == "" || s.promptBarrierRelease == "" {
+		return fmt.Errorf("prompt barrier paths are required")
+	}
+	if err := os.WriteFile(s.promptBarrierReady, []byte("ready\n"), 0600); err != nil {
+		return fmt.Errorf("prompt barrier ready: %w", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(s.promptBarrierRelease); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("prompt barrier release: %w", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("prompt barrier timed out waiting for release")
 }
 
 func (s *MockACPServer) handleCancelPrompt(req JSONRPCRequest) error {

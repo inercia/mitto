@@ -13,7 +13,8 @@ import type { Locator, Page } from "@playwright/test";
  *      filter is focused, the rows are name-sorted with the current model
  *      highlighted, filter by name, and select with ArrowDown+Enter.
  *   2. Ctrl+M flow: with the textarea focused, Ctrl+M opens the picker with
- *      the filter focused; a selection confirms via Enter; a further Ctrl+M
+ *      the filter focused; a selection confirms via Enter and restores
+ *      textarea focus; a further Ctrl+M
  *      reopens and another Ctrl+M closes the picker and restores textarea
  *      focus. Cmd+M stays native (macOS Window > Minimize) and is never
  *      intercepted by the web layer.
@@ -120,9 +121,9 @@ test.describe("Model Picker", () => {
     await page.keyboard.press("Enter");
     await expect(filter).toBeHidden();
     await expect(trigger).toContainText("Opus 4.6");
+    await expect(textarea).toBeFocused();
 
-    // Ctrl+M reopens the picker (the shortcut bubbles to the global handler
-    // even from the menu's own filter input).
+    // Ctrl+M reopens the picker from the textarea.
     await page.keyboard.press("Control+m");
     await expect(filter).toBeVisible();
     await expect(filter).toBeFocused();

@@ -139,6 +139,83 @@ type MockACPServer struct {
 	configUpdateDuplicates int
 	configUpdateEmptyFirst bool
 	noConfigOptions        bool
+	modelFixture           *modelFixture
+	modelFixtureErr        error
+	modelAttemptFile       string
+	promptBarrierMarker    string
+	promptBarrierReady     string
+	promptBarrierRelease   string
+}
+
+type modelFixture struct {
+	InitialModel string                      `json:"initial_model"`
+	Options      []SessionConfigSelectOption `json:"options"`
+}
+
+func loadModelFixture(path string) (*modelFixture, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var fixture modelFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	grouped := len(fixture.Options) > 0 && len(fixture.Options[0].Options) > 0
+	for _, option := range fixture.Options {
+		if (len(option.Options) > 0) != grouped {
+			return nil, fmt.Errorf("mixed grouped and ungrouped model options")
+		}
+		if len(option.Options) > 0 {
+			if option.Group == "" || option.Name == "" || option.Value != "" {
+				return nil, fmt.Errorf("invalid model group")
+			}
+			for _, child := range option.Options {
+				if child.Value == "" || child.Name == "" || len(child.Options) != 0 || seen[child.Value] {
+					return nil, fmt.Errorf("invalid model group option %q", child.Value)
+				}
+				seen[child.Value] = true
+			}
+		} else {
+			if option.Value == "" || option.Name == "" || seen[option.Value] {
+				return nil, fmt.Errorf("invalid model option %q", option.Value)
+			}
+			seen[option.Value] = true
+		}
+	}
+	if !seen[fixture.InitialModel] {
+		return nil, fmt.Errorf("initial model %q is not advertised", fixture.InitialModel)
+	}
+	return &fixture, nil
+}
+
+func (s *MockACPServer) initialModel() string {
+	if s.modelFixture != nil {
+		return s.modelFixture.InitialModel
+	}
+	return defaultModelId
+}
+
+func (s *MockACPServer) modelOptions() []SessionConfigSelectOption {
+	if s.modelFixture != nil {
+		return s.modelFixture.Options
+	}
+	return defaultModelOptions
+}
+
+func (s *MockACPServer) validModel(value string) bool {
+	for _, opt := range s.modelOptions() {
+		if opt.Value == value && value != "" {
+			return true
+		}
+		for _, child := range opt.Options {
+			if child.Value == value && value != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Default modes provided by the mock server
@@ -261,6 +338,10 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 		server.effortConfigName = "Reasoning effort"
 	}
 	server.noConfigOptions = mockEnvEnabled("MOCK_NO_CONFIG_OPTIONS")
+	if path := os.Getenv("MOCK_MODEL_FIXTURE_FILE"); path != "" {
+		server.modelFixture, server.modelFixtureErr = loadModelFixture(path)
+		server.currentModel = server.initialModel()
+	}
 	server.configUpdateEmptyFirst = mockEnvEnabled("MOCK_CONFIG_UPDATE_EMPTY_FIRST")
 	if v := os.Getenv("MOCK_CONFIG_UPDATE_DELAY_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -311,6 +392,10 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 
 	// MOCK_RPC_ORDER_FILE: append-only log of inbound RPC arrival order.
 	server.rpcOrderFile = os.Getenv("MOCK_RPC_ORDER_FILE")
+	server.modelAttemptFile = os.Getenv("MOCK_MODEL_ATTEMPT_FILE")
+	server.promptBarrierMarker = os.Getenv("MOCK_PROMPT_BARRIER_MARKER")
+	server.promptBarrierReady = os.Getenv("MOCK_PROMPT_BARRIER_READY")
+	server.promptBarrierRelease = os.Getenv("MOCK_PROMPT_BARRIER_RELEASE")
 
 	// MOCK_MCP_INIT_DELAY_MS: delay session/new by this many ms and emit an MCP-init
 	// progress line on stderr. Only applies when the request carries MCP servers.
@@ -388,6 +473,9 @@ func (s *MockACPServer) loadScenarios() {
 
 // Run starts the server main loop
 func (s *MockACPServer) Run() error {
+	if s.modelFixtureErr != nil {
+		return fmt.Errorf("model fixture: %w", s.modelFixtureErr)
+	}
 	s.log("Mock ACP server starting...")
 
 	for {

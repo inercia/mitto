@@ -37,6 +37,22 @@ The mock server is typically started by Mitto as a subprocess, but can be run ma
 | `--delay` | 50ms | Default delay between response chunks |
 | `--verbose` | false | Enable verbose logging to stderr |
 
+### Model fixtures and transport observations
+
+Set `MOCK_MODEL_FIXTURE_FILE` to a JSON file with `initial_model` and `options`.
+The options are either ACP flat values (`{"value":"id","name":"Name"}`) or
+ACP groups (`{"group":"id","name":"Name","options":[...]}`); do not mix
+the two forms. The initial model must be present and IDs must be unique. Without
+this variable, the standard mock catalog remains unchanged.
+
+`MOCK_MODEL_ATTEMPT_FILE` enables an append-only JSONL log with `method`,
+`session_id`, `model`, and `outcome` for model setter attempts. The existing
+`MOCK_RPC_ORDER_FILE` continues to record prompt/model order separately.
+For deterministic prompt synchronization, set `MOCK_PROMPT_BARRIER_MARKER`,
+`MOCK_PROMPT_BARRIER_READY`, and `MOCK_PROMPT_BARRIER_RELEASE`. A matching
+prompt writes the ready file after recording its model and waits up to 30 seconds
+for the release file; the test must create the release file during cleanup.
+
 ### Example
 
 ```bash
@@ -172,4 +188,3 @@ The server sends notifications for streaming responses:
 - `types.go` - Protocol type definitions
 - `handler.go` - Request handlers and scenario matching
 - `sender.go` - Response sending utilities
-

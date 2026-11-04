@@ -52,6 +52,7 @@ function defaultModelHighlight(options, query, currentValue) {
  * @param {Function} [props.onOpenChange]          - (isOpen: boolean) => void, notified on every open-state
  *                                                    transition (summary toggles and internal closes) when
  *                                                    controlling via props.open.
+ * @param {Function} [props.onKeyboardSelectionFocus] - restore focus after keyboard selection; defaults to trigger.
  */
 export function ConfigOptionSelect({
   configOption,
@@ -64,6 +65,7 @@ export function ConfigOptionSelect({
   onShowToast,
   open: controlledOpen,
   onOpenChange,
+  onKeyboardSelectionFocus,
 }) {
   const [localValue, setLocalValue] = useState(configOption.current_value);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
@@ -172,9 +174,12 @@ export function ConfigOptionSelect({
       setLocalValue(newValue); // optimistic
       onSetConfigOption?.(configOption.id, newValue);
       closeMenu();
-      if (restoreFocus) triggerRef.current?.focus();
+      if (restoreFocus) {
+        if (onKeyboardSelectionFocus) onKeyboardSelectionFocus();
+        else triggerRef.current?.focus();
+      }
     },
-    [configOption.id, configOption.current_value, onSetConfigOption, closeMenu],
+    [configOption.id, configOption.current_value, onSetConfigOption, closeMenu, onKeyboardSelectionFocus],
   );
 
   const closeSearchableMenu = useCallback(() => {
