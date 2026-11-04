@@ -3,6 +3,7 @@ package prompts
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
@@ -30,12 +31,12 @@ import (
 //     reconciliation pipeline. Its stale-ticket reconciliation step depends on the
 //     full live ticket set having been processed earlier in the SAME run, and
 //     concurrent bd writes from spawned children would risk database races.
-//     Already declares preferredModels: [Coding].
+//     Declares preferredModels: [Smart, Coding, Cheap] (tier ladder, no split).
 //   - jira/decompose.prompt.yaml and the non-loop jira prompts (new-ticket,
 //     pull-issue, pull-to-new, push-issue, push-new): menu-dispatched, not
-//     loop-intended (no loop: block), already preferredModels: [Coding].
+//     loop-intended (no loop: block), tier-ladder preferredModels.
 //   - beads/triage-bugs.prompt.yaml: already converted ahead of this task —
-//     preferredModels: [Cheap, Coding], runs entirely inline (no spawns).
+//     runs entirely inline (no spawns) with preferredModels: [Smart, Coding].
 //
 // These subtests pin the current (already-correct, or deliberately-unchanged)
 // state as a regression guard, so a future edit that "simplifies" one of these
@@ -45,7 +46,7 @@ import (
 func TestBuiltinJiraTriageBugsLoopPromptsNotSplit(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 
-	t.Run("beads/triage-bugs.prompt.yaml already Cheap+Coding", func(t *testing.T) {
+	t.Run("beads/triage-bugs.prompt.yaml already Smart+Coding", func(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", "beads/triage-bugs.prompt.yaml"))
 		if err != nil {
 			t.Fatal(err)
@@ -54,7 +55,7 @@ func TestBuiltinJiraTriageBugsLoopPromptsNotSplit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantTags := []string{"Cheap", "Coding"}
+		wantTags := []string{"Smart", "Coding"}
 		if len(prompt.PreferredModels) != len(wantTags) {
 			t.Fatalf("preferred models = %+v, want tags %v", prompt.PreferredModels, wantTags)
 		}
@@ -65,15 +66,22 @@ func TestBuiltinJiraTriageBugsLoopPromptsNotSplit(t *testing.T) {
 		}
 	})
 
-	// These jira loop prompts intentionally keep a single Coding preference
-	// (not split into a Cheap outer + spawned Coding child) — see rationale above.
-	codingOnlyFiles := []string{
-		"jira/status-all-inprogress.prompt.yaml",
-		"jira/status-one-inprogress.prompt.yaml",
-		"jira/sync-tasks.prompt.yaml",
+	// These jira loop prompts intentionally keep tag-first preferences matching
+	// their tier ladder (not split into a Cheap outer + spawned Coding child) —
+	// see rationale above.
+	wantTagsByFile := map[string][]string{
+		"jira/status-all-inprogress.prompt.yaml": {"Coding"},
+		"jira/status-one-inprogress.prompt.yaml": {"Coding"},
+		"jira/sync-tasks.prompt.yaml":            {"Smart", "Coding", "Cheap"},
 	}
+	var codingOnlyFiles []string
+	for file := range wantTagsByFile {
+		codingOnlyFiles = append(codingOnlyFiles, file)
+	}
+	sort.Strings(codingOnlyFiles)
 	for _, file := range codingOnlyFiles {
-		t.Run(file+" stays Coding-only (not split)", func(t *testing.T) {
+		wantTags := wantTagsByFile[file]
+		t.Run(file+" keeps its tier ladder (not split)", func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", file))
 			if err != nil {
 				t.Fatal(err)
@@ -82,8 +90,13 @@ func TestBuiltinJiraTriageBugsLoopPromptsNotSplit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(prompt.PreferredModels) != 1 || prompt.PreferredModels[0].ModelTag != "Coding" {
-				t.Errorf("preferred models = %+v, want only Coding", prompt.PreferredModels)
+			if len(prompt.PreferredModels) != len(wantTags) {
+				t.Fatalf("preferred models = %+v, want tags %v", prompt.PreferredModels, wantTags)
+			}
+			for i, tag := range wantTags {
+				if prompt.PreferredModels[i].ModelTag != tag {
+					t.Errorf("preferred model %d = %+v, want %s", i, prompt.PreferredModels[i], tag)
+				}
 			}
 		})
 	}

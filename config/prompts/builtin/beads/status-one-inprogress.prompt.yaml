@@ -6,7 +6,7 @@ backgroundColor: '#F0F4C3'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Smart
 target:
   title: 'Status ONE in-progress'
   reuse:

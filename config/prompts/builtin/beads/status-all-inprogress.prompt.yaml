@@ -10,7 +10,7 @@ target:
     title: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Cheap
 prompt: |
   # Beads: Status Check — All In-Progress Beads
 

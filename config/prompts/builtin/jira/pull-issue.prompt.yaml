@@ -13,7 +13,9 @@ parameters:
     description: The beads issue ID to fix
 enabledWhen: 'Workspace.TasksUpstream == "prompts" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && (("jira-sync" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync")))'
 preferredModels:
+  - modelTag: Smart
   - modelTag: Coding
+  - modelTag: Cheap
 target:
   title: 'JIRA: sync tasks'
   reuse:

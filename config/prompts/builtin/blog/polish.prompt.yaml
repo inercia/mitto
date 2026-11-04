@@ -27,7 +27,7 @@ target:
     issue: true
     coalesce: true
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Smart
 prompt: |
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}

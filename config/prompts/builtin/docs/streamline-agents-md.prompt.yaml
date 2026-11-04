@@ -6,7 +6,9 @@ group: Agents & Mitto
 backgroundColor: '#B3E5FC'
 enabledWhen: '!Session.IsLoopConversation && FileExists("AGENTS.md")'
 preferredModels:
+  - modelTag: Smartest
   - modelTag: Reasoning
+  - modelTag: Smart
 parameters:
   - name: SubDocsDir
     type: text

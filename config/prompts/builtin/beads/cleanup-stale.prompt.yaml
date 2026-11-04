@@ -10,7 +10,7 @@ target:
     title: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Smart
 prompt: |
   {{ template "_shared/session-context" . }}
 

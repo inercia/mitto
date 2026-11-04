@@ -19,6 +19,7 @@ parameters:
     description: 'Optional PR to check — a number, URL, or branch name. If omitted, uses the current branch.'
 enabledWhen: 'FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab")) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
+  - modelTag: Smart
   - modelTag: Coding
 prompt: |
   Check whether the current pull request has review comments worth acting on,

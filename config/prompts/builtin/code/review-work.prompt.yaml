@@ -6,6 +6,7 @@ group: Code Quality
 backgroundColor: '#C8E6C9'
 enabledWhen: 'Session.HasMessages && !Session.IsLoopConversation'
 preferredModels:
+  - modelTag: Smartest
   - modelTag: Reasoning
   - modelTag: Smart
 prompt: |

@@ -2557,9 +2557,9 @@ func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 	}
 }
 
-// TestHighConfidenceBuiltinPrompts_DeclarePairedFallback pins the three
+// TestHighConfidenceBuiltinPrompts_DeclarePairedFallback pins the
 // high-confidence builtin prompts scoped by mitto-42t to the paired
-// `[Cheap, Coding]` preferredModels fallback (matching the existing convention
+// two-tag preferredModels fallback (matching the existing convention
 // on beads-overview, github-sync-tasks, jira-sync-tasks, report-to-parent,
 // child-cleanup, check-ci). Regression guard: silently dropping the tag on any
 // of these three would revert them to the session baseline and lose the
@@ -2568,33 +2568,34 @@ func TestHighConfidenceBuiltinPrompts_DeclarePairedFallback(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
-	wantTags := []string{"Cheap", "Coding"}
-
-	files := []string{
-		"beads-issues/dependencies.prompt.yaml",
-		"support/check-status.prompt.yaml",
-		"beads/triage-bugs.prompt.yaml",
+	files := []struct {
+		file     string
+		wantTags []string
+	}{
+		{"beads-issues/dependencies.prompt.yaml", []string{"Smart", "Coding"}},
+		{"support/check-status.prompt.yaml", []string{"Cheap", "Coding"}},
+		{"beads/triage-bugs.prompt.yaml", []string{"Smart", "Coding"}},
 	}
 
-	for _, file := range files {
-		t.Run(file, func(t *testing.T) {
-			path := filepath.Join(builtinDir, file)
+	for _, want := range files {
+		t.Run(want.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, want.file)
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatalf("read %s: %v", path, err)
 			}
-			p, err := ParsePromptFile(file, data, time.Now())
+			p, err := ParsePromptFile(want.file, data, time.Now())
 			if err != nil {
-				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+				t.Fatalf("ParsePromptFile(%s): %v", want.file, err)
 			}
-			if len(p.PreferredModels) != len(wantTags) {
+			if len(p.PreferredModels) != len(want.wantTags) {
 				t.Fatalf("%s: len(PreferredModels) = %d, want %d ([%s])",
-					file, len(p.PreferredModels), len(wantTags), strings.Join(wantTags, ", "))
+					want.file, len(p.PreferredModels), len(want.wantTags), strings.Join(want.wantTags, ", "))
 			}
-			for i, want := range wantTags {
-				if got := p.PreferredModels[i].ModelTag; got != want {
+			for i, tag := range want.wantTags {
+				if got := p.PreferredModels[i].ModelTag; got != tag {
 					t.Errorf("%s: PreferredModels[%d].ModelTag = %q, want %q",
-						file, i, got, want)
+						want.file, i, got, tag)
 				}
 			}
 		})

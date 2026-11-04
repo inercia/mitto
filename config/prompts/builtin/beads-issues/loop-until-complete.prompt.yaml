@@ -23,7 +23,7 @@ backgroundColor: "#C8E6C9"
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Cheap
 loop:
   trigger: [onCompletion]
   onCompletion:

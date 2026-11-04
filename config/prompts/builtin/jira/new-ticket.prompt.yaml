@@ -6,7 +6,9 @@ backgroundColor: '#C8E6C9'
 group: JIRA
 enabledWhen: 'Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")'
 preferredModels:
+  - modelTag: Smart
   - modelTag: Coding
+  - modelTag: Cheap
 prompt: |
   {{ template "_shared/session-context" . }}
 

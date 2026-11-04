@@ -5,7 +5,9 @@ description: Interactively build a developer-ready specification through guided 
 group: Planning
 backgroundColor: '#FFECB3'
 preferredModels:
+  - modelTag: Smartest
   - modelTag: Reasoning
+  - modelTag: Smart
 parameters:
   - name: Dirname
     type: dirname

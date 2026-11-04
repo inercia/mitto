@@ -6,6 +6,7 @@ group: Documentation
 backgroundColor: '#E1BEE7'
 preferredModels:
   - modelTag: Coding
+  - modelTag: Smart
 prompt: |
   {{- if .Session.HasMessages }}
   Review the conversation so far and infer what needs to be documented from the

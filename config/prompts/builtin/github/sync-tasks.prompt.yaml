@@ -11,6 +11,7 @@ enabledWhen: Workspace.TasksUpstream == "github" && FileExists(".git/config") &&
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
+  - modelTag: Smart
 loop:
   trigger: [schedule]
   schedule:

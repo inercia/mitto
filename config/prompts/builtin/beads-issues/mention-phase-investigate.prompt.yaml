@@ -24,7 +24,9 @@ description: Internal phase-tier prompt — investigate a fix-style @mitto menti
 group: Tasks
 backgroundColor: '#B3E5FC'
 preferredModels:
+  - modelTag: Smartest
   - modelTag: Reasoning
+  - modelTag: Smart
 target:
   reuse:
     issue: true

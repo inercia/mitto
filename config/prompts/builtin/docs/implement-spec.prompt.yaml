@@ -6,7 +6,9 @@ group: Development
 backgroundColor: '#FFECB3'
 enabledWhen: 'CommandExists("bd") && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
+  - modelTag: Smartest
   - modelTag: Reasoning
+  - modelTag: Smart
 parameters:
   - name: SpecFile
     type: filename

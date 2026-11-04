@@ -6,7 +6,7 @@ backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: CommandExists("bd")
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Smart
 prompt: |
   {{ template "_shared/session-context" . }}
 

@@ -10,31 +10,38 @@ import (
 
 func TestBuiltinCostAwareModelPreferences(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
-	files := []string{
-		"beads-issues/loop-until-complete.prompt.yaml",
-		"github/check-pr-comments.prompt.yaml",
-		"skills/add-doc.prompt.yaml",
-		"skills/update-references.prompt.yaml",
+	cases := []struct {
+		file string
+		tags []string
+	}{
+		{"beads-issues/loop-until-complete.prompt.yaml", []string{"Cheap"}},
+		{"github/check-pr-comments.prompt.yaml", []string{"Smart", "Coding"}},
+		{"skills/add-doc.prompt.yaml", []string{"Smart", "Coding"}},
+		{"skills/update-references.prompt.yaml", []string{"Coding"}},
 	}
-
-	for _, file := range files {
-		t.Run(file, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", file))
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", tc.file))
 			if err != nil {
 				t.Fatal(err)
 			}
-			prompt, err := ParsePromptFile(file, data, time.Now())
+			prompt, err := ParsePromptFile(tc.file, data, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(prompt.PreferredModels) != 1 || prompt.PreferredModels[0].ModelTag != "Coding" {
-				t.Errorf("preferred models = %+v, want only Coding", prompt.PreferredModels)
+			if len(prompt.PreferredModels) != len(tc.tags) {
+				t.Fatalf("preferred models = %+v, want tags %v", prompt.PreferredModels, tc.tags)
+			}
+			for i, tag := range tc.tags {
+				if prompt.PreferredModels[i].ModelTag != tag {
+					t.Errorf("preferred model %d = %+v, want %s", i, prompt.PreferredModels[i], tag)
+				}
 			}
 		})
 	}
 }
 
-func TestBuiltinInvestigatePromptUsesSmartAndImplementationReadyReport(t *testing.T) {
+func TestBuiltinInvestigatePromptUsesSmartestAndImplementationReadyReport(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	file := "beads-issues/investigate.prompt.yaml"
 	data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", file))
@@ -45,8 +52,11 @@ func TestBuiltinInvestigatePromptUsesSmartAndImplementationReadyReport(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prompt.PreferredModels) != 1 || prompt.PreferredModels[0].ModelTag != "Smart" {
-		t.Errorf("preferred models = %+v, want only Smart", prompt.PreferredModels)
+	if len(prompt.PreferredModels) != 3 ||
+		prompt.PreferredModels[0].ModelTag != "Smartest" ||
+		prompt.PreferredModels[1].ModelTag != "Reasoning" ||
+		prompt.PreferredModels[2].ModelTag != "Smart" {
+		t.Errorf("preferred models = %+v, want [Smartest Reasoning Smart]", prompt.PreferredModels)
 	}
 	report, err := os.ReadFile("../../config/prompts/builtin/beads-issues/shared/investigate-report.tmpl")
 	if err != nil {
@@ -113,26 +123,36 @@ func TestBuiltinInvestigatePromptUsesSmartAndImplementationReadyReport(t *testin
 
 func TestBuiltinCheapOuterLoopModelPreferences(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
-	files := []string{
-		"beads-issues/loop-fixing-bug.prompt.yaml",
-		"beads-issues/loop-implementing-feature.prompt.yaml",
-		"beads-issues/mention-driver.prompt.yaml",
-		"github/babysit-contributions.prompt.yaml",
-		"github/babysit-my-prs.prompt.yaml",
-		"github/babysit-this-pr.prompt.yaml",
+	cases := []struct {
+		file string
+		tags []string
+	}{
+		// Cheap-only outer loops (heavy work delegated to children pinned to Coding).
+		{"beads-issues/loop-fixing-bug.prompt.yaml", []string{"Cheap"}},
+		{"beads-issues/loop-implementing-feature.prompt.yaml", []string{"Cheap"}},
+		{"beads-issues/mention-driver.prompt.yaml", []string{"Cheap"}},
+		// Babysit loops escalate through the tier ladder when a cheap model is unavailable.
+		{"github/babysit-contributions.prompt.yaml", []string{"Cheap", "Smart", "Coding"}},
+		{"github/babysit-my-prs.prompt.yaml", []string{"Cheap", "Smart"}},
+		{"github/babysit-this-pr.prompt.yaml", []string{"Cheap", "Smart"}},
 	}
-	for _, file := range files {
-		t.Run(file, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", file))
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", tc.file))
 			if err != nil {
 				t.Fatal(err)
 			}
-			prompt, err := ParsePromptFile(file, data, time.Now())
+			prompt, err := ParsePromptFile(tc.file, data, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(prompt.PreferredModels) != 1 || prompt.PreferredModels[0].ModelTag != "Cheap" {
-				t.Errorf("preferred models = %+v, want only Cheap", prompt.PreferredModels)
+			if len(prompt.PreferredModels) != len(tc.tags) {
+				t.Fatalf("preferred models = %+v, want tags %v", prompt.PreferredModels, tc.tags)
+			}
+			for i, tag := range tc.tags {
+				if prompt.PreferredModels[i].ModelTag != tag {
+					t.Errorf("preferred model %d = %+v, want %s", i, prompt.PreferredModels[i], tag)
+				}
 			}
 		})
 	}
@@ -243,8 +263,8 @@ func TestSupportPhaseModelPreferences(t *testing.T) {
 		tags []string
 	}{
 		{"support/watch-channel.prompt.yaml", []string{"Cheap", "Coding"}},
-		{"support/investigate.prompt.yaml", []string{"Reasoning"}},
-		{"support/compose-draft.prompt.yaml", []string{"Coding"}},
+		{"support/investigate.prompt.yaml", []string{"Reasoning", "Smartest", "Smart"}},
+		{"support/compose-draft.prompt.yaml", []string{"Smart", "Coding"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {

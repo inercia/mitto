@@ -8,6 +8,7 @@ enabledWhen: Session.IsChild && Parent.Exists && Permissions.CanSendPrompt && !S
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
+  - modelTag: Smart
 prompt: |
   Report the current status and findings to the parent conversation that spawned this one.
 

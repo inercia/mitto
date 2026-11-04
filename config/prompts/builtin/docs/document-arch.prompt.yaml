@@ -5,7 +5,9 @@ description: Update developer/architecture documentation for the changes we just
 group: Documentation
 backgroundColor: '#CE93D8'
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Smartest
+  - modelTag: Reasoning
+  - modelTag: Smart
 target:
   title: 'Document Architecture'
   reuse:

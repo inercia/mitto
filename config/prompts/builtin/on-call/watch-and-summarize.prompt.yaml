@@ -5,6 +5,7 @@ group: On-Call
 backgroundColor: '#C8E6C9'
 enabledWhen: '!Session.IsChild && Tools.HasAnyPattern(["slack_*", "*_slack"])'
 preferredModels:
+  - modelTag: Smart
   - modelTag: Coding
 parameters:
   - name: SlackChannelID

@@ -7,6 +7,7 @@ backgroundColor: '#B3E5FC'
 enabledWhen: '!Session.IsLoopConversation && !FileExists("AGENTS.md")'
 preferredModels:
   - modelTag: Coding
+  - modelTag: Smart
 target:
   title: 'Generate AGENTS.md'
   reuse:

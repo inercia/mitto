@@ -10,7 +10,7 @@ backgroundColor: '#D1C4E9'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && Item.Type != "epic" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
-  - modelTag: Smart
+  - modelTag: Smartest
 target:
   reuse:
     issue: true

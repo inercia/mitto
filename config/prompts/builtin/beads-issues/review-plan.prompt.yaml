@@ -12,6 +12,8 @@ group: Tasks
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Type == "feature" && Item.Status != "closed" && Item.Labels != null && ("implementation-refined" in Item.Labels || "planned" in Item.Labels) && !("implemented" in Item.Labels || "tested" in Item.Labels || "verified" in Item.Labels) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
   - modelTag: Smartest
+  - modelTag: Reasoning
+  - modelTag: Smart
 target:
   reuse:
     issue: true

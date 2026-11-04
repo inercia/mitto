@@ -18,7 +18,7 @@ target:
     title: true
     coalesce: true
 preferredModels:
-  - modelTag: Cheap
+  - modelTag: Smart
   - modelTag: Coding
 prompt: |
   {{ template "_shared/session-context" . }}

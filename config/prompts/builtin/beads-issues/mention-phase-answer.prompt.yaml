@@ -24,7 +24,9 @@ description: Internal phase-tier prompt — answer a question-style @mitto menti
 group: Tasks
 backgroundColor: '#B3E5FC'
 preferredModels:
+  - modelTag: Smartest
   - modelTag: Reasoning
+  - modelTag: Smart
 target:
   reuse:
     issue: true

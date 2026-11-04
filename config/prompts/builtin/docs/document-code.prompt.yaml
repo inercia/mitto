@@ -6,6 +6,7 @@ group: Documentation
 backgroundColor: '#B39DDB'
 preferredModels:
   - modelTag: Coding
+  - modelTag: Smart
 target:
   title: 'Document Code'
   reuse:

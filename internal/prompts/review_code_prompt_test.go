@@ -45,8 +45,11 @@ func TestBuiltinCodeReviewsEligibilityAndRouting(t *testing.T) {
 			if prompt.Name != review.name || prompt.Menus != "beadsIssues" {
 				t.Fatalf("name/menus = %q/%q", prompt.Name, prompt.Menus)
 			}
-			if len(prompt.PreferredModels) != 1 || prompt.PreferredModels[0].ModelTag != "Smartest" {
-				t.Errorf("preferred models = %+v, want only Smartest", prompt.PreferredModels)
+			if len(prompt.PreferredModels) != 3 ||
+				prompt.PreferredModels[0].ModelTag != "Smartest" ||
+				prompt.PreferredModels[1].ModelTag != "Reasoning" ||
+				prompt.PreferredModels[2].ModelTag != "Smart" {
+				t.Errorf("preferred models = %+v, want [Smartest Reasoning Smart]", prompt.PreferredModels)
 			}
 			if !promptTargetReuseIssue(prompt) || promptTargetReuseCoalesce(prompt) == nil || !*promptTargetReuseCoalesce(prompt) {
 				t.Error("code review must reuse/coalesce the bead conversation")

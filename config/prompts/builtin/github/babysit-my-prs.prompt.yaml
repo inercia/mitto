@@ -15,6 +15,7 @@ tags:
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
 preferredModels:
   - modelTag: Cheap
+  - modelTag: Smart
 loop:
   trigger: [onCompletion]
   onCompletion:

@@ -6,6 +6,7 @@ group: Agents & Mitto
 backgroundColor: '#B3E5FC'
 enabledWhen: '!Session.IsLoopConversation && FileExists("**/SKILL.md")'
 preferredModels:
+  - modelTag: Smart
   - modelTag: Coding
 parameters:
   - name: SkillFile

@@ -7,6 +7,8 @@ menus: beadsIssues, conversation
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")))'
 preferredModels:
   - modelTag: Reasoning
+  - modelTag: Smartest
+  - modelTag: Smart
 tags:
 - support
 target:
