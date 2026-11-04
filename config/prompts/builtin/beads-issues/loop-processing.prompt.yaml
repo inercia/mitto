@@ -420,8 +420,11 @@ prompt: |
   1. Non-orchestrator comment after `<deferred-ts>` whose body does not start with
      `[deferred:`, `[undeferred:`, `[addressed-comment:`, or `Orchestrator:` (those
      are our own bookkeeping — not the human replying).
-  2. Description edited after `<deferred-ts>` (proxy: `updated_at` bump with no
-     orchestrator comment at the same time; when in doubt count as a reply).
+  2. Description edited after `<deferred-ts>`. Do **not** treat a bare `updated_at`
+     bump as a reply: `bd update --notes` execution-state writes also bump it. Count
+     this signal only when the notes execution-state block does not explain the bump
+     (marker `<!-- mitto:execution-state:v1 -->` with matching `updated:`/`by:`).
+     When in doubt, do not undefer; wait for an actual comment.
 
   On either signal:
 
@@ -1160,8 +1163,8 @@ prompt: |
   - **Defer instead of guessing.** Anything needing a decision/credential/external
     access/clarification → Step 7, with a machine-parseable marker (Step 2Z relies on it).
   - **Undefer on human response.** Step 2Z re-opens `needs-human` beads whose newest
-    `[deferred: <ts>]` has a later non-orchestrator comment or description edit,
-    posting `[undeferred: <deferred-ts>]`.
-  - **Always log to the tracker.** Short `bd comment` for every orchestration
-    action (spawn, timeout, completion, defer, undefer, reap).
+    `[deferred: <ts>]` has a later non-orchestrator comment or actual description edit,
+    posting `[undeferred: <deferred-ts>]`. Execution-state notes writes are not replies.
+  - **Log only meaningful transitions.** Short `bd comment` for spawn, timeout,
+    completion, defer, undefer, or reap; skip no-op passes and duplicate status.
   - **No `Item.*`.** `beadsList` prompt — all targeting comes from Step 2.

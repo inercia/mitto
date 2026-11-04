@@ -68,8 +68,11 @@ prompt: |
   Labels drift between runs. Load the bead's **current** state fresh:
 
   ```bash
-  bd show {{ $target }} --json --include-comments
+  bd show {{ $target }} --long --json
+  bd comments {{ $target }} --json | jq '.[-10:]'  # recent comments only
   ```
+
+  {{ template "beads-issues/shared/execution-state-read" $target }}
 
   Read its `labels` array and prior comments (especially the plan-phase `Plan:`
   comment recorded when `planned` was added — it tells you the approach and design
@@ -126,4 +129,5 @@ prompt: |
       "TagNoun"         "summary"
       "TagPrefix"       "Implementation"
       "Tier"            "Coding"
+      "Target"          $target
   ) }}

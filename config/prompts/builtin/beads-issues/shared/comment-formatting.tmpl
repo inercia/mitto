@@ -1,19 +1,19 @@
 {{- /*
-  beads-issues/shared/comment-formatting — the standard "write the progress
-  bd comment as rich, human-readable Markdown" bullet used across the
-  beads-issues loop chain (phase-guidelines-footer, loop-driver-guidelines-common,
-  and the four mention-phase-* prompts). Progress comments are what a human
-  reads in the bead history, so they must be well-formatted GFM rather than a
-  flat one-liner.
+  beads-issues/shared/comment-formatting — the standard progress-comment policy
+  used across the beads-issues loop chain (phase-guidelines-footer,
+  loop-driver-guidelines-common, and the four mention-phase-* prompts).
 
-  Two hard rules it codifies:
-    (a) format the body as readable GitHub-flavored Markdown (bold / inline
-        code / fenced blocks / lists), while keeping any required tier tag
-        (e.g. `Fix [tier: Coding]:`) as the FIRST line — history detection and
-        the phase self-checks grep for that prefix;
+  Comments are an audit trail, not a narrative. They must stay cheap to read:
+  one concise, evidence-dense delta per phase/run, with raw paths and command
+  results instead of descriptions of the work.
+
+  Hard rules:
+    (a) keep any required tier tag (e.g. `Fix [tier: Coding]:`) as the FIRST
+        line — history detection and the phase self-checks grep for that prefix;
     (b) preserve real line breaks — pipe multi-line bodies via stdin
         (`printf '%s' "$c" | bd comment <id> --stdin`) — never collapse a
-        multi-line comment into one flat line.
+        multi-line comment into one flat line;
+    (c) do not comment when nothing changed and there is no verdict.
 
   Whitespace contract identical to beads-issues/shared/markdown-convention:
     - Fragment body is column-1 Markdown (NO leading indent) — it slots
@@ -30,12 +30,29 @@
   The stdin-piping example uses `"$c"` as a stand-in for whichever local shell
   variable the caller uses to hold the comment body.
 */ -}}
-- **Write the comment for a human, in rich Markdown.** Progress `bd comment`s must read as
-  well-formatted GitHub-flavored Markdown, not a flat one-liner: **bold** the key facts
-  (root cause, decision, outcome), wrap symbols / files / commands in `inline code`, use
-  fenced code blocks for diffs, commands and their output, and bullet or numbered lists for
-  steps. Keep any required tier tag (e.g. `Fix [tier: Coding]:`) as the **first line** —
-  history detection and the phase self-checks grep for that prefix — then put the formatted
-  body on the lines below. Preserve real line breaks: pipe a multi-line body through stdin
-  (`printf '%s' "$c" | bd comment <id> --stdin`) instead of collapsing it into one line.
+- **Write a concise, scientific progress comment.** Comments are evidence, not prose:
+  - **One per phase/run**, and only when something changed or a verdict was reached.
+    A no-op run writes no comment.
+  - **Budget:** about 10 lines / 1.5 KB for routine progress. Keep any required tier tag
+    (e.g. `Fix [tier: Coding]:`) as the **first line** — history detection and the phase
+    self-checks grep for that prefix.
+  - **Use raw facts, not descriptions:** exact file paths/symbols, commands and exit
+    status, counts, PASS/FAIL/UNKNOWN, and the next action or blocker. Do not describe what
+    a file does, restate requirements, or narrate "I/we".
+  - **Do not duplicate reports.** Detailed Plan/Investigation/Acceptance evidence belongs
+    once in its canonical comment; later comments reference it by prefix instead of
+    repeating it.
+  - Use Markdown only where it improves scanning (short bullets, inline code). Avoid
+    fenced blocks and log dumps for routine progress.
+  - Preserve real line breaks: pipe a multi-line body through stdin
+    (`printf '%s' "$c" | bd comment <id> --stdin`) instead of collapsing it into one line.
+
+  Example shape:
+  ```
+  Implementation [tier: Coding]:
+  files: internal/foo.go, internal/foo_test.go
+  change: add X; preserve Y
+  checks: go test ./internal/foo => PASS
+  next: review
+  ```
 {{- /* no trailing newline */ -}}

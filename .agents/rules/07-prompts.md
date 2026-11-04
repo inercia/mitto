@@ -24,17 +24,14 @@ keywords:
 ## Start work closure ownership
 
 `beads-issues/work` has independent `Commit` (default-on) and `ClosePolicy`
-(`Ask` default, `Leave open`, `Verify and close`) parameters. Forward both through
-every continuation/worker call and mirror loop arguments. `Ask` closes only on
-explicit Yes; timeout never closes. `Verify and close` uses the conditional
-`beads-issues/shared/acceptance-close` coordinator and the fresh, internal
-`Acceptance verification phase` (no reuse/singleton/loop). Only a complete current
-PASS tied to the exact child, attempt, ticket and content snapshot permits closure;
-errors, UNKNOWN and wait timeout leave open. Child workers delegate coordination
-to their parent because MCP forbids grandchildren; never bypass that restriction.
-Do not reap workers with pending verification or substitute terminal labels for
-acceptance. Orchestrators owning closure pass `Leave open`; post-task hooks are
-too late to enforce this gate. This is a prompt contract, not runtime enforcement.
+(`Ask` default, `Leave open`, `Close if validated`) parameters. Forward both through
+every continuation/worker call and mirror loop arguments. `Close if validated` closes
+immediately when the effective ticket already carries its terminal validation label:
+`verified` for features/tasks/chores, `fixed` for bugs. It spawns no verifier, computes
+no acceptance snapshot/hash, and performs no extra checks. If the label is absent, leave
+the ticket open and report why. `Ask` closes only on an explicit Yes; timeout never
+closes. `Leave open` never closes. Orchestrators owning closure pass `Leave open`; this
+is a prompt contract, not runtime enforcement.
 
 ## Architecture Overview
 

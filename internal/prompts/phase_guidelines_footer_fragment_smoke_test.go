@@ -76,13 +76,16 @@ func TestPhaseGuidelinesFooterFragmentRenders(t *testing.T) {
 		if !strings.Contains(out, "- **Live state only.** Always re-read labels via `bd show --json` at the start of") {
 			t.Errorf("%q: missing Live-state bullet header", c.name)
 		}
-		if !strings.Contains(out, "- **Always log to the tracker** with `bd comment` so progress is auditable.") {
-			t.Errorf("%q: missing Always-log bullet", c.name)
+		if !strings.Contains(out, "- **Log a concise delta/verdict** with `bd comment`; skip the comment when nothing changed.") {
+			t.Errorf("%q: missing concise-log bullet", c.name)
 		}
-		// The shared comment-formatting bullet (rich human-readable Markdown for
-		// progress comments) must render right after the Always-log bullet.
-		if !strings.Contains(out, "- **Write the comment for a human, in rich Markdown.**") {
-			t.Errorf("%q: missing comment-formatting (rich Markdown) bullet", c.name)
+		// The shared comment-formatting bullet must render right after the
+		// concise-log bullet.
+		if !strings.Contains(out, "- **Write a concise, scientific progress comment.**") {
+			t.Errorf("%q: missing comment-formatting (concise/scientific) bullet", c.name)
+		}
+		if !strings.Contains(out, "<!-- mitto:execution-state:v1 -->") {
+			t.Errorf("%q: missing execution-state write recipe", c.name)
 		}
 		wantTierTag := "- **Tier tag every comment.** Prefix the " + c.noun +
 			" with `" + c.prefix + " [tier: " + c.tier + "]:` so"

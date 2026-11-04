@@ -56,8 +56,11 @@ prompt: |
   Labels drift between runs. Load the bead's **current** state fresh:
 
   ```bash
-  bd show {{ $target }} --json --include-comments
+  bd show {{ $target }} --long --json
+  bd comments {{ $target }} --json | jq '.[-10:]'  # recent comments only
   ```
+
+  {{ template "beads-issues/shared/execution-state-read" $target }}
 
   Read its `labels` array, description, and acceptance criteria.
   {{- if BeadHasLabelsStrict $target "planned" }} The bead **already carries `planned`**, so this
@@ -136,4 +139,5 @@ prompt: |
       "TagNoun"         "plan"
       "TagPrefix"       "Plan"
       "Tier"            "Smartest"
+      "Target"          $target
   ) }}

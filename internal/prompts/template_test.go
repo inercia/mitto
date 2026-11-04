@@ -2298,8 +2298,8 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			if !strings.Contains(outA, "mitto-abc") {
 				t.Errorf("%s branch (a): expected bead ID 'mitto-abc' in output", file)
 			}
-			if !strings.Contains(outA, "bd show mitto-abc --json --include-comments") {
-				t.Errorf("%s branch (a): expected 'bd show mitto-abc --json --include-comments' in output", file)
+			if !strings.Contains(outA, "bd show mitto-abc --long --json") {
+				t.Errorf("%s branch (a): expected 'bd show mitto-abc --long --json' in output", file)
 			}
 
 			// (b) Arg-only context — IssueID supplied by the dispatching
@@ -2649,8 +2649,8 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			if !strings.Contains(outA, "mitto-abc") {
 				t.Errorf("%s branch (a): expected bead ID 'mitto-abc' in output", file)
 			}
-			if !strings.Contains(outA, "bd show mitto-abc --json --include-comments") {
-				t.Errorf("%s branch (a): expected 'bd show mitto-abc --json --include-comments' in output", file)
+			if !strings.Contains(outA, "bd show mitto-abc --long --json") {
+				t.Errorf("%s branch (a): expected 'bd show mitto-abc --long --json' in output", file)
 			}
 
 			// (b) Arg-only context — IssueID supplied by the dispatching

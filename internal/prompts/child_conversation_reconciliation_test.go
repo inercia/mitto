@@ -28,19 +28,4 @@ func TestBuiltinUnreportedChildConversationsAreReconciledBeforeDeferral(t *testi
 			t.Errorf("Start work cleanup guidance missing reconciliation contract %q", contract)
 		}
 	}
-
-	verifyCtx := linkedWorkRegressionContext()
-	verifyCtx.Args["ClosePolicy"] = "Verify and close"
-	verifyCtx.Args["EffectiveID"] = "mitto-baseline"
-	_, verify := renderBuiltinPromptForWorkRegression(t, "beads-issues/work.prompt.yaml", verifyCtx)
-	normalizedVerify := strings.Join(strings.Fields(verify), " ")
-	for _, contract := range []string{
-		"bead children remain open",
-		"A Mitto child conversation that has not reported is not an open bead child by itself",
-		"reconcile it (`mitto_conversation_get`, `mitto_conversation_history`",
-	} {
-		if !strings.Contains(normalizedVerify, contract) {
-			t.Errorf("acceptance coordinator missing bead-child/reconciliation boundary %q", contract)
-		}
-	}
 }

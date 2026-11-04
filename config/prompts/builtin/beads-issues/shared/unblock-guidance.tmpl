@@ -15,10 +15,7 @@ For each blocked/deferred bead:
 
 {{ template "beads-issues/shared/blocked-explanation" . }}
 
-1. **Verify before declaring it blocked.** Reread live status, dependencies, children and comments; distinguish real blockers
-   from stale state or satisfied dependencies.
-2. **Propose the smallest concrete next step.** Give owner and why. Suggest tracker corrections, but apply
-   only if this prompt authorizes them and its confirmation policy is met.
+{{ template "beads-issues/shared/blocked-diagnosis" . }}
 3. If the user can unblock it, ask **one direct, specific question or action request** for the missing decision,
    information, criterion, permission or external action; explain how it advances the bead. Use
    `mitto_ui_options(self_id: "{{ .SessionID }}", allow_free_text: true)` for a finite choice or

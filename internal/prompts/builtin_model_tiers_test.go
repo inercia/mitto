@@ -171,10 +171,12 @@ func TestBuiltinBeadsDriversUseFreshDurableTaskTriggers(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	cases := []struct {
 		file   string
+		show   string
 		states []string
 	}{
 		{
 			file: "beads-issues/loop-fixing-bug.prompt.yaml",
+			show: "bd show {{ $target }} --long --json",
 			states: []string{
 				"researched", "reproduced", "fixed",
 				"Investigation:", "Reproduction:", "Fix:",
@@ -182,6 +184,7 @@ func TestBuiltinBeadsDriversUseFreshDurableTaskTriggers(t *testing.T) {
 		},
 		{
 			file: "beads-issues/loop-implementing-feature.prompt.yaml",
+			show: "bd show {{ $target }} --long --json",
 			states: []string{
 				"planned", "implemented", "tested", "verified",
 				"Plan:", "Implementation:", "Testing:", "Review:",
@@ -189,6 +192,7 @@ func TestBuiltinBeadsDriversUseFreshDurableTaskTriggers(t *testing.T) {
 		},
 		{
 			file: "beads-issues/mention-driver.prompt.yaml",
+			show: "bd show {{ $target }} --json --include-comments",
 			states: []string{
 				"mention-investigated", "mention-planned", "mention-implemented",
 				"mention-answered", "[addressed-comment: {{ $ts }}]",
@@ -239,7 +243,7 @@ func TestBuiltinBeadsDriversUseFreshDurableTaskTriggers(t *testing.T) {
 			}
 
 			for _, marker := range []string{
-				"bd show {{ $target }} --json --include-comments",
+				tc.show,
 				`eq .Kind "onTasks"`,
 				`eq .Kind "onCompletion"`,
 			} {

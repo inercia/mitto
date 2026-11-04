@@ -1,8 +1,8 @@
 {{/*
-  beads/load-context — the standard 4-command "load everything you need to
-  reason about a specific bead" block: full detail, dependency tree, existing
-  children, prior comments. Used by prompts that operate on a single target
-  bead (assess, discuss, investigate, and future consumers).
+  beads/load-context — the standard context block: full detail, dependency
+  tree, existing children, canonical execution state, and a bounded recent
+  comment window. Used by prompts that operate on a single target bead
+  (status, discuss, investigate, and future consumers).
 
   The template argument (`.` inside the fragment) is the target bead ID as a
   plain string. Callers typically resolve it into a local `$target` variable
@@ -24,9 +24,14 @@
   callers terse and avoids depending on template helpers the project's
   FuncMap does not expose.
 */}}
+{{ template "beads-issues/shared/execution-state-read" . }}
 ```bash
 bd show {{ . }} --long --json     # description, acceptance, design, notes, labels, status
 bd dep tree {{ . }}               # blockers and what it blocks
 bd show {{ . }} --children --json # existing child beads (if any)
-bd comments {{ . }}               # prior discussion, if any
+bd comments {{ . }} --json | jq '.[-10:]'  # recent comments only
 ```
+The execution-state block is the canonical handoff. The comment window is recent
+context only: do not read the full history. If a canonical `Plan`,
+`Investigation`, or `Acceptance verification` report is not in the window, fetch
+that specific prefix instead of widening the window indefinitely.

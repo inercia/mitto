@@ -1,0 +1,63 @@
+{{- /*
+  beads-issues/shared/execution-state-write — update the canonical
+  execution-state block inside a ticket's `notes`.
+
+  The argument (`.`) is the target bead ID as a plain string.
+
+  Writers: phase workers (phase-guidelines-footer), loop drivers
+  (loop-driver-guidelines-common), Loop until issue complete.
+  Readers: every prompt that loads ticket context, including Start work, which
+  delegates the write to the phase worker it dispatches.
+
+  `notes` is shared with unrelated prompts and humans. Preserve every byte
+  outside the marker block; re-read immediately before writing; skip on
+  concurrent change. The block is deliberately small and machine-readable.
+*/ -}}
+- **Update execution state in notes; preserve all other notes.** Replace the marker
+  block below; never use `bd update --append-notes`. Re-read; if notes changed, skip and
+  leave a concise comment. Preserve any existing `resolve_blocked` checkpoint inside the
+  block, including nested recovery and unknown fields.
+```bash
+set -o pipefail
+id="{{ . }}"
+before=$(bd show "$id" --long --json | jq -r '(.[0].notes // "") + "."') || exit 1
+before=${before%.}
+block=$(cat <<'EOF'
+updated: <UTC>
+by: <session-id>
+phase: <phase/run>
+outcome: <done|partial|failed|blocked>
+next: <next action>
+files: <raw paths>
+checks: <cmd => PASS|FAIL|UNKNOWN>
+refs: <comment prefix/attempt ID>
+EOF
+)
+# Replace in place; carry the complete top-level checkpoint, including nested fields.
+notes=$(printf '%s' "$before" | STATE_BLOCK="$block" perl -0777 -e '
+  local $/; $_ = <STDIN> // "";
+  $start = "<!-- mitto:execution-state:v1 -->";
+  $end = "<!-- /mitto:execution-state -->";
+  $n = () = /\Q$start\E/g; $m = () = /\Q$end\E/g;
+  die "invalid execution-state markers\n" if $n != $m || $n > 1;
+  $body = $ENV{STATE_BLOCK};
+  if ($n) {
+    /\Q$start\E\n(.*?)\n\Q$end\E/s or die "invalid execution-state block\n";
+    $old = $1;
+    $count = () = $old =~ /^resolve_blocked:/mg;
+    die "duplicate checkpoint\n" if $count > 1;
+    $body .= "\n$1" if $old =~ /^(resolve_blocked:[^\n]*(?:\n(?![^ \t\n])[^\n]*)*)/m;
+    s/\Q$start\E\n.*?\n\Q$end\E/$start\n$body\n$end/s;
+  } else {
+    $_ .= (length ? "\n\n" : "") . "$start\n$body\n$end\n";
+  }
+  print $_, ".";
+') || { echo "state merge failed; not saved" >&2; exit 1; }
+notes=${notes%.} # sentinel preserves trailing newlines through command substitution
+after=$(bd show "$id" --long --json | jq -r '(.[0].notes // "") + "."') || exit 1
+after=${after%.}
+[ "$after" = "$before" ] || { echo "notes changed; state not saved" >&2; exit 0; }
+bd update "$id" --notes "$notes"
+```
+  Never claim saved on failure; others own the rest.
+{{- /* no trailing newline */ -}}

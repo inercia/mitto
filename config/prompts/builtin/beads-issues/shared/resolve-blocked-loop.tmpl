@@ -1,0 +1,64 @@
+{{- /* Epic no-ready escalation. Parent owns repeat suppression and execution-state writes. */ -}}
+### Resolve blocked before stopping an epic
+
+Run this gate only for an epic with unfinished descendants and no runnable in-scope work.
+Do not diagnose an all-closed or unchanged completed-but-open subtree. Standalone tickets retain
+their existing stop behavior. Never claim blocked tickets just to diagnose them.
+
+1. **Reconcile first.** Read this parent's durable execution-state block on the epic, including
+    `resolve_blocked: {input, child_id, task_id, state, outcome, retry, recovery}`. Reconcile an existing
+   diagnostic child with `mitto_conversation_get`, `mitto_conversation_history`, and stored reports
+   before considering another spawn. A running child, timeout, or idle-without-report is unresolved,
+   not a completed diagnosis; query/wait for that same child within the remaining run budget. At a
+   configured cap, report the pending handoff and stop without deleting the child or extending the cap.
+   Also inspect this parent's existing
+   Resolve blocked children if a crash occurred before saving their IDs. Do not spawn a replacement or disable
+   the loop while its outcome remains pending. A confirmed failed/disappeared child becomes unknown,
+    is recorded once, and is not automatically respawned for unchanged inputs. Only the shared
+    contract's explicit, evidenced, one-use infrastructure retry exception permits a retry.
+2. **Bound retries by relevant input, not activity.** Persist a canonical sorted snapshot (or hash)
+   of descendant IDs, requirements/design/acceptance, status, labels, dependency edges and their
+    endpoint states, claims/worker states, material producer/test/worker evidence, human replies/decisions,
+    and deferral/retry eligibility.
+   Include referenced external dependency state read-only. Exclude `updated_at`, execution-state
+   notes, diagnostic reports, automated progress comments, and current wall time. A future deadline
+   becoming due is a relevant change; time merely passing is not. Exclude this diagnostic child's
+   own lifecycle from worker-state changes. Same completed input means no new diagnosis except
+   the one-use infrastructure exception. Otherwise retry only after a relevant dependency,
+   requirement, human, other-worker, or due-time change.
+    For unchanged attempted input, skip spawning and continue Step 5's stop path unless the shared
+    infrastructure exception applies. No previous snapshot permits a first attempt; a failed
+    comparison is unknown, not permission to retry.
+3. **One child, no second phase.** If a work/diagnostic child was already dispatched this run,
+   defer this gate to the next run. If the iteration/duration cap cannot accommodate a bounded
+   diagnostic handoff, report that omission and stop; never extend the configured cap. Otherwise:
+    Set `<diagnostic-id> := <epic-id>` and apply the shared lifecycle:
+    {{ template "beads-issues/shared/resolve-blocked-dispatch" (dict "SessionID" .Session.ID "Corrections" "true") }}
+   Record input, returned child_id/task_id and pending state on the **epic**, preserving other notes,
+   before waiting via `mitto_children_tasks_wait_mitto`. If spawning or persistence fails, report
+   unknown and do not dispatch another child. Never fall through to implementation in this run.
+4. **Reload, do not trust an unblocked claim.** Validate the exact child's task report and reload
+   the tree/readiness after it. Persist outcome, evidence, changes, next owner/event and retry
+   condition in `resolve_blocked` inside the epic's existing execution-state block. Preserve that
+   field on ordinary state writes; no append-only notes history or new unblocked label. If diagnosis
+   changed tracker state, store the **post-correction input** too, preventing self-triggered retries.
+   Only meaningful outcome changes warrant one concise comment (`bd comments add <epic-id> -f <file>`).
+   - ready: end this run; next run ranks freshly ready children normally.
+    - prerequisite: confirm the proposed target is in scope, fully specified, and live-routable;
+     persist its target/next phase and end this run. Next run reloads that handoff and routes through
+     the existing phase using normal readiness/ownership checks, without dropping dependencies,
+      human holds, or another worker's claim. A report alone never overrides Step 2 eligibility
+      for implementation. The recovery contract separately permits authorized read-only research
+      or an owner handoff; it never makes blocked implementation ready.
+   - blocked/unknown, malformed/missing report, or no live ready/routable target: report evidence,
+     owner/event/retry condition honestly, then continue Step 5's stop path. Do not ask work/design
+     UI questions and do not repeat unchanged diagnosis. A later externally triggered/manual run
+     may reconsider relevant changed input; a disabled loop does not wake itself.
+
+   A wait-wrapper completion or an idle session is not task evidence. Read the stored report;
+   accept only this diagnostic child's matching task/target and the defined outcome fields.
+    A genuine dependency or human hold still bars implementation; research/handoffs obey the
+    recovery contract and may not bypass the hold itself.
+
+This gate authorizes only the diagnostic phase's narrow stale automated metadata corrections.
+It never authorizes implementation, scope expansion, dependency removal, or any ClosePolicy change.

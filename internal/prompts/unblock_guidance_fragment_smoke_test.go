@@ -12,7 +12,6 @@ func TestUnblockGuidanceFragmentRendersInInteractiveConsumers(t *testing.T) {
 	const fragmentCall = `template "beads-issues/shared/unblock-guidance"`
 	consumers := map[string]string{
 		"Explain":               "../../config/prompts/builtin/beads-issues/explain.prompt.yaml",
-		"Start work":            "../../config/prompts/builtin/beads-issues/work.prompt.yaml",
 		"Check status":          "../../config/prompts/builtin/beads-issues/status.prompt.yaml",
 		"Reevaluate all issues": "../../config/prompts/builtin/beads/reevaluate.prompt.yaml",
 	}

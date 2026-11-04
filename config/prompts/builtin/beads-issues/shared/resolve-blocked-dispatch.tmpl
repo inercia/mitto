@@ -1,0 +1,36 @@
+{{- /* Caller owns approval, scope, persistence and recovery routing. */ -}}
+**Diagnostic handoff contract** (authorized only):
+- Authorized target only; never claim; restricted delegates report to parent.
+- Parent owns `resolve_blocked: {input, child_id, task_id, state, outcome, retry, recovery}`
+  in notes; preserve others. Reconcile get/history/reports first; recover IDs after crash.
+  Running/unconfirmed completion: pending, not unknown.
+  Idle/timeout is not evidence; wait within budget. Missing report is unknown only after
+  confirmed terminal failure/disappearance or terminal missing/malformed report.
+- Compare sorted requirements, dependency/endpoint states, labels, claims, human decisions,
+  producer/test/worker evidence and due eligibility. Exclude updated_at, notes, automated progress,
+   diagnostic reports, wall time and own lifecycle. No prior input: first attempt;
+   comparison failure: unknown. Same input: no new diagnosis after completion.
+   Infrastructure failure only: one explicit caller-authorized retry after evidenced recovery,
+   no pending child; persist retry used before spawning. Continue alone is not consent.
+- Diagnostic run: one child/run; no implementation child or inline work; obey caps/permissions.
+  No budget/permission: report omission; never delete pending children.
+  ```
+  mitto_conversation_new(self_id: "{{ .SessionID }}", title: "Resolve blocked · <diagnostic-id>", beads_issue: "<diagnostic-id>", model_tag: "Smartest", prompt_name: "Resolve blocked phase", arguments: {"IssueID":"<diagnostic-id>","AllowTrackerCorrections":"{{ .Corrections }}"})
+  ```
+- Save child/task IDs and input before waiting via `mitto_children_tasks_wait`.
+  Spawn/persist failure: reconcile first, no second spawn this run.
+  Require matching task/target report (`ready|prerequisite|blocked|unknown`), not wait wrapper.
+  Reload readiness; save outcome/evidence/owner/event/retry/post-correction input.
+  Recovery: save action/target/phase/owner/source/success/stop, disposition
+  `proposed|delivered|accepted|completed`; consume before ordinary readiness on next run.
+  Ready: normal routing. Blocked: scoped read-only research only, caller approval/authority,
+  no human/security/access hold or competing worker; retain blockers/claims.
+  Route research through `mitto_conversation_new` with `model_tag: "Smart"`, `beads_issue` target
+  and `initial_prompt`: exact assignment/source/success/stop, report to parent, no file/tracker/
+  label/claim/commit/closure mutations. Save child/task IDs before waiting; reconcile before
+  replacement; completed requires matching task/target report plus success evidence.
+  Existing owner: one authorized sourced handoff; delivery is not acceptance, never replace.
+  Mark accepted only on owner acknowledgment; record refusal/wait without repeating the handoff.
+  Missing authority/new scope: seek approval/external owner, never silently execute.
+  Recheck scope/holds/ownership/disposition; no duplicates. Preserve phase/closure approval.
+  Comment only changes. Report grants no correction, scope, claim, dependency, hold or closure authority.

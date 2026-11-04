@@ -2243,49 +2243,22 @@ free-text feedback leaves the ticket open.
 
 Start work supports standalone and orchestrated use through two independent parameters:
 `Commit` (boolean, default `true`) controls phase commits and maps to the phases'
-`SubmitStrategy` (`Commit` or `None`); `ClosePolicy` (`Ask` by default, `Leave open`, or `Verify and close`)
-controls closure ownership. An orchestrator that owns both passes
-`{ "Commit": "false", "ClosePolicy": "Leave open" }`. It may keep commits enabled while
-reserving closure. Both values are forwarded to queued Start work continuations and child
-Start work calls (also mirrored into `loop_arguments` for looped children); ownership is
-never inferred from parent/child status. Commits include only attributable task changes
-and never trigger an automatic push. `Commit=false` does not block explicitly approved
-closure. No-target inline work honors `Commit` but has no ticket to close.
+`SubmitStrategy` (`Commit` or `None`); `ClosePolicy` (`Ask` by default, `Leave open`, or `Close if validated`) controls closure
+ownership. `Close if validated` closes immediately when the effective ticket already carries
+its terminal validation label — `verified` for feature/task/chore, `fixed` for bug. It spawns
+no verifier, computes no acceptance snapshot/hash, runs no extra checks, and does not wait for
+a child report. If the label is absent, leave the ticket open and report why. `Ask` closes only
+on an explicit Yes; timeout, cancel, No, free text, and tool errors leave it open. `Leave open`
+never calls closure or approval UI. Both values are forwarded to queued Start work
+continuations and child Start work calls (also mirrored into `loop_arguments` for looped
+children); ownership is never inferred from parent/child status. `Commit=false` does not block
+explicitly approved closure. No-target inline work honors `Commit` but has no ticket to close.
 
-`Verify and close` adds an independent **acceptance verification phase** after normal
-completion and any requested commits. A fresh Reasoning-tier child checks every explicit
-acceptance criterion against the actual deliverables and safe checks, records a durable
-PASS/FAIL/UNKNOWN checklist, and reports to the closure coordinator. The coordinator closes
-only after a complete PASS tied to this ticket, unique attempt, and unchanged requirements,
-hierarchy and working tree. A `fixed`/`verified` label alone is insufficient. The verifier
-does not fix, commit, close, push, or replace human sign-off. `Commit=false` may verify
-uncommitted work unless acceptance itself requires a commit/merge/deployment.
-
-The verifier wait is bounded to 600 seconds. Timeout, missing criteria/evidence, failed checks,
-stale state, required human action, or tool/permission errors leaves the ticket open with
-findings, without an automatic repair/retry inside the verification attempt or fallback to
-`Ask`. A running verifier and its coordinator are not deleted on timeout. In a loop, the next
-run may dispatch one bounded repair based on the durable failed criteria; Start work requires an
-explicit retry after resolving the findings. No-target inline work never launches a verifier.
-
-Start work forwards this policy through self-continuations and parallel child calls. A child
-cannot spawn grandchildren, so it queues the complete verification-and-close procedure to its
-parent, naming the effective leaf ticket explicitly. The parent spawns a fresh sibling verifier
-and owns closure; a missing/unavailable parent leaves the ticket open. Callers must not reap
-that worker or close from terminal labels before the gate finishes. Orchestrators that already
-own closure should continue passing `Leave open`; independent loop drivers retain their own
-closure rules. Post-task hooks run **after** closure and cannot enforce this pre-close gate.
-These are prompt instructions, not a runtime-enforced transactional lock; if concurrent edits
-or evidence cannot be checked reliably, the required outcome is UNKNOWN and no closure.
-
-`Loop until issue complete` uses `ClosePolicy`, matching Start work: `Ask` (default),
-`Leave open`, or `Verify and close`. `Verify and close` schedules the same fresh independent
-acceptance phase on the **next** bounded loop run after implementation, with a fresh sibling
-verifier owned by the loop orchestrator. `Ask` closes only after a bounded explicit Yes; timeout,
-cancel, No, free text, and tool errors leave the ticket open. `Leave open` records completion but
-never calls closure or approval UI. An unchanged completed unit is not reimplemented or repeatedly
-asked about; an epic continues with other children. Neither policy bypasses genuine blockers, open
-children, or explicit human/external requirements.
+`Loop until issue complete` uses the same policy: `Close if validated` closes immediately on
+the terminal label; `Ask` only after an explicit Yes; `Leave open` records completion but never
+closes. An unchanged completed unit is not reimplemented or repeatedly asked about; an epic
+continues with other children. No policy bypasses genuine blockers, open children, or explicit
+human/external requirements.
 
 ## Variable Substitution in Prompts
 
@@ -2957,3 +2930,80 @@ Mitto after adding or modifying prompt or fragment files.
 - [Message Processors](processors.md) - Dynamic message transformation
 - [Web Interface Configuration](web/README.md) - Web interface settings
 - [macOS App Configuration](mac/README.md) - Desktop app settings
+## Resolve blocked diagnostic phase
+
+`Resolve blocked phase` is an internal, Smartest-tier diagnostic prompt. It can be reused
+with an exact `IssueID`; `AllowTrackerCorrections` defaults to `false`. It shares the
+non-interactive diagnosis rules in `beads-issues/shared/blocked-diagnosis` with the
+interactive unblock guidance. Interactive callers retain their approval/UI rules; the
+diagnostic phase does not ask work/design questions.
+
+All shared unblock guidance checks producer/consumer contracts between tickets: what A needs
+from B, whether B promised and actually delivered it, and whether plans, dependency metadata or
+agent assumptions are stale. Resolve blocked traces both directions and reports exact artifacts,
+sources, owners and gaps. Missing delivery is not permission to silently enlarge B's scope.
+
+An agent's abandoned attempt or claim of impossibility is evidence to examine, not a final
+verdict. The diagnostic reads actual attempts/errors, repository precedents, documentation and
+available capabilities. It distinguishes knowledge gaps and failed approaches from genuine human,
+external, security or permission constraints; unavailable history remains unknown. Recovery means
+one concrete, evidence-backed task with owner, success criterion and stop condition—not "try harder".
+Only an authorized parent coordinates a handoff or routes that task through existing phases;
+the diagnostic does not message/restart workers, steal claims or spawn replacements. New material
+producer outputs, tests or worker evidence can change retry input; repetitive progress cannot.
+
+`Loop until issue complete` invokes it only at an epic's no-runnable-work boundary,
+before disabling the loop, when unfinished descendants remain. It reconciles existing
+diagnostic children first and dispatches at most one diagnostic child per run, with no
+implementation phase in that run. Standalone and all-completed scopes retain their stop behavior.
+
+The parent stores a `resolve_blocked` checkpoint inside the epic's existing execution-state
+notes block, preserving other notes. The executable state-write recipe carries the complete
+checkpoint forward, including nested recovery and unknown fields, replacing the block in place.
+Malformed/duplicate markers or checkpoints fail without writing; changed notes skip the write.
+This is a re-read guard, not an atomic compare-and-swap.
+
+The checkpoint records input, child/task IDs, outcome, retry condition and recovery disposition.
+Reconciliation precedes retry comparison: running or unconfirmed completion stays pending;
+only confirmed terminal failure/disappearance or terminal missing/malformed reports become unknown.
+No prior snapshot allows a first attempt; a failed comparison does not. Unchanged inputs normally
+do not trigger another attempt. One explicit caller-authorized infrastructure retry is permitted
+after evidenced recovery, with no pending child; its use is saved before spawning. A routine
+Continue does not authorize it. Relevant dependency, requirement,
+human, worker or due-time changes permit reconsideration; notes writes, automated progress,
+the diagnostic child's lifecycle and wall time alone do not. Post-correction inputs are saved
+to avoid self-triggered retries. A disabled loop requires an external/manual trigger to resume.
+
+Outcomes are `ready`, `prerequisite`, `blocked`, or `unknown`, with targets, evidence, changes
+and next owner/action/event. Parents reload readiness rather than trusting a report's claim.
+On the next run, parents consume persisted recovery before ordinary readiness selection, while
+rechecking scope, holds, ownership and approval. Ready implementation uses existing phases.
+For a blocked target, an authorized, bounded read-only research child may gather missing evidence
+without clearing dependencies or claiming the ticket. Its exact assignment includes sources,
+success criterion, stop condition and no file/tracker/claim/closure mutations; child/task IDs
+are persisted and reconciled. A sourced handoff goes to the existing owner, not a replacement.
+Disposition is `proposed`, `delivered`, `accepted`, or `completed`: delivery alone is not acceptance,
+and completion requires matching report and success evidence. One recovery action consumes the
+run; no second implementation phase. Missing authority or new scope requires approval/external
+coordination. Outside-scope work is report-only.
+Explicit correction authority permits only evidenced stale automated metadata repairs; never
+dependency removal, human-hold removal, claim theft, scope expansion, inline implementation,
+ticket closure, or changes to `Close if validated`. Missing evidence stays unknown.
+
+`Start work` and linked-ticket `Continue` reuse the diagnostic lifecycle in
+`beads-issues/shared/resolve-blocked-dispatch`. They first recheck readiness and use
+diagnosis only for uncertain blockers with unfinished authorized work. Confirmed human/external/
+owner waits skip that candidate, not the whole epic. Active ownership alone does not exclude
+read-only analysis of an uncertain producer/consumer handoff, but never permits takeover.
+Completed scopes do not trigger diagnosis. Interactive
+runs offer **Check blockers**; only an explicit selection approves spawning (not timeout).
+Scheduled Continue runs diagnose without work/design UI questions, within existing caps.
+Both callers pass `AllowTrackerCorrections=false`. Read-only diagnosis does not authorize
+parent corrections; those retain the caller's separate evidence/approval requirements.
+
+Continue routes epic containers before incomplete leaves. A ready/prerequisite diagnostic
+result ends the run; the next continuation reloads readiness and routes normally, without
+bypassing dependencies, claims, phase approval or closure policy. Blocked/unknown is reported
+as unresolved, never as completion. Restricted delegates report to their parent rather than
+becoming coordinators, and unlinked Continue never starts ticket diagnosis. Transport-only
+Continue in new/existing and workspace-wide task orchestration remain unchanged.

@@ -1,0 +1,90 @@
+icon: search
+name: Resolve blocked phase
+menus: internal
+group: Tasks
+description: Diagnose apparently blocked work and return one bounded, evidence-backed next action
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: true
+    description: Exact ticket or epic subtree to diagnose
+  - name: AllowTrackerCorrections
+    type: boolean
+    default: "false"
+    description: Allow only evidenced stale automated metadata corrections within this subtree
+preferredModels:
+  - modelTag: Smartest
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Resolve blocked — diagnostic phase only
+
+  Diagnose `{{ .Args.IssueID }}` and its subtree, not unrelated backlog. Do not run Start work
+  or implement a prerequisite here. This phase never closes tickets, changes validation labels,
+  commits, pushes, or starts another child. Do not ask work/design questions through interactive UI;
+  report missing decisions to the caller. The caller retains its ClosePolicy and all approval rules.
+
+  {{ template "beads-issues/shared/load-context" .Args.IssueID }}
+
+  {{ template "beads-issues/shared/blocked-diagnosis" . }}
+
+  Inspect the recursive graph for cycles, active ownership, expired automated deferrals,
+  recoverable specification gaps, and external/human holds. Requirements come from tickets and
+  user decisions, not agent proposals. Missing evidence is unknown, not an external blocker.
+  Route substantive prerequisites through existing phases; outside-scope work is report-only.
+
+  ## Dependency contracts and premature give-ups
+
+  Trace both blocking and blocked-by directions, including related tickets read-only outside scope.
+  For each relevant handoff, record consumer -> producer, exact artifact/API/behavior needed,
+  authoritative source, promised delivery, current evidence and owner. Compare both tickets with
+  implementation, tests and latest decisions: a closed producer or existing edge does not prove
+  the consumer's need was delivered. Detect missing edges, mismatched contracts, partial delivery,
+  cycles and stale plans. If B omitted something A needs, distinguish an already-sourced obligation
+  from a new scope request; propose the smallest owner/handoff correction, never silently expand B.
+
+  Treat an agent's "cannot do this" or abandoned attempt as a hypothesis. Read the actual task
+  report/history and attempted commands/errors when available; idle/timeout alone proves nothing.
+  Check repository precedents, current documentation and available tools/access before accepting
+  impossibility. Distinguish missing knowledge, a failed approach, missing evidence and genuine
+  external/human/security constraints. Missing history/access means unknown, not agent fault.
+  Never reinterpret a safety refusal, human hold or permission denial as reluctance to overcome.
+
+  Recommend one bounded recovery task with new evidence, exact next step, owner, success criterion
+  and stop condition. The authorized parent may relay a sourced handoff to the existing owner or
+  route research/test/implementation through existing phases. This diagnostic phase only reports;
+  it does not message/restart workers or edit other tickets. No duplicate workers, claim stealing,
+  vague "try harder" nudges, or repeated retries without changed evidence. An active owner's work
+  remains theirs. Unknown decisions go to the caller, not into invented requirements.
+  Active ownership alone does not prove a handoff is understood: inspect uncertain contracts
+  read-only, without racing the owner. Assess confirmed waits per candidate, not for the whole epic.
+
+  {{ if eq .Args.AllowTrackerCorrections "true" -}}
+  **Limited correction authority:** re-read immediately before each mutation. Correct only provably
+  stale automated deferral/status metadata in this subtree when its recorded reason is already
+  satisfied by authoritative evidence. Record before/after and evidence. Unknown provenance means
+  no correction. Never remove dependency edges, human holds, `needs-human`, or future human deferrals;
+  never claim/reassign work, clear active ownership, expand scope, or invent acceptance requirements.
+  {{- else -}}
+  **Read-only:** suggest corrections; do not mutate tracker fields, labels, dependencies, or notes.
+  {{- end }}
+
+  Stop after one diagnostic pass. Return a compact report with:
+  - outcome: ready | prerequisite | blocked | unknown
+  - targets: exact in-scope IDs
+  - evidence: raw paths, commands/results, dependency IDs, sourced decisions; handoff gaps and tested assumptions
+  - changes: before/after or none
+  - next: one scoped action, owner, concrete retry event/time (or none)
+  - recovery: kind (ready-target | read-only-research | owner-handoff | approval), target,
+    existing phase or exact read-only research assignment, source, owner, success criterion,
+    stop condition and required authority; disposition starts proposed, not accepted
+
+  `ready` requires live readiness, not a proposed correction. `prerequisite` requires a fully
+  specified in-scope action routable through an existing phase, an authorized read-only research
+  child, or an authorized existing-owner handoff. Read-only research on a blocked ticket does
+  not authorize implementation or clearing blockers. Missing approval/new scope stays blocked/unknown
+  with the proposed recovery preserved for the caller, not discarded.
+  Active other workers remain untouched. Cycles require an evidenced proposal, not edge deletion.
+  Report using `mitto_children_tasks_report_mitto` with the caller's exact task_id when supplied.
+  Task status completed means diagnosis finished, not that the ticket is unblocked or complete.
+  Caller owns durable execution-state persistence; do not overwrite its notes or add an unblocked label.

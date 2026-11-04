@@ -121,8 +121,9 @@ prompt: |
     phases.
   - **Live state only.** Always re-read labels via `bd show --json` at the start of
     the phase; never assume labels from a prior run or from `Item.*`.
-  - **Always log to the tracker** with `bd comment` so progress is auditable.
+  - **Log only a concise delta/verdict** with `bd comment`; skip the comment when nothing changed.
   {{ template "beads-issues/shared/comment-formatting" . }}
+  {{ if $target }}{{ template "beads-issues/shared/execution-state-write" $target }}{{ end }}
   - **Tier tag every comment.** Prefix findings with `Investigation [tier: Reasoning]:`
     so the tier split is observable in the bead history (mitto-91wk acceptance
     criteria).

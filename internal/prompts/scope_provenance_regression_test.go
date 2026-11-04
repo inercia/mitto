@@ -47,34 +47,6 @@ func TestBuiltinScopeProvenanceAndDelegationBoundaries(t *testing.T) {
 		}
 	})
 
-	t.Run("verifier distinguishes revision evidence", func(t *testing.T) {
-		ctx := linkedWorkRegressionContext()
-		ctx.Session.IsChild, ctx.Session.ParentID = true, "coordinator"
-		ctx.Args = map[string]string{
-			"IssueID": "mitto-target", "AttemptID": "attempt",
-			"ExpectedState":  `{"workspace":"/workspace","head":"abc","ticket_sha256":"123","tree_sha256":"456"}`,
-			"SnapshotRecipe": "safe snapshot recipe",
-		}
-		_, body := renderBuiltinPromptForWorkRegression(t, "beads-issues/acceptance-verification.prompt.yaml", ctx)
-		normalized := strings.Join(strings.Fields(body), " ")
-		for _, want := range []string{
-			"distinguish mechanism compatibility, exact-new-revision fetchability and downstream adoption",
-			"Require fetchability or adoption only when an authoritative criterion explicitly says so",
-			"An older pseudo-version is not proof the new revision is fetchable",
-			"empty local remote-tracking list does not prove remote absence",
-			"Ambiguity stays UNKNOWN",
-		} {
-			if !strings.Contains(normalized, want) {
-				t.Errorf("rendered verifier missing %q", want)
-			}
-		}
-		for _, forbidden := range []string{"must prove downstream adoption", "push to publish the revision"} {
-			if strings.Contains(body, forbidden) {
-				t.Errorf("rendered verifier adds unauthorized gate/action %q", forbidden)
-			}
-		}
-	})
-
 	t.Run("continue scopes child before linked workflow", func(t *testing.T) {
 		ctx := linkedWorkRegressionContext()
 		ctx.Session.IsChild, ctx.Session.ParentID = true, "parent-coordinator"

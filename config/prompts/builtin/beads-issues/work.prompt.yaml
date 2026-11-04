@@ -13,8 +13,8 @@ parameters:
   - name: ClosePolicy
     type: text
     default: Ask
-    options: [Ask, Leave open, Verify and close]
-    description: Ask (default), leave open for the caller, or close only after fresh independent acceptance verification
+    options: [Ask, Leave open, Close if validated]
+    description: Ask (default), leave open for the caller, or close immediately when the ticket already has its terminal validation label (verified for feature/task/chore, fixed for bug); no verifier is spawned
 description: Check whether this bead is actionable, then advance it one phase (investigate → implement → test/review) by dispatching the phase prompt that matches its labels
 backgroundColor: '#B2DFDB'
 group: Tasks
@@ -35,12 +35,11 @@ prompt: |
   {{ $close := Default "Ask" .Args.ClosePolicy -}}
   Explicit policy: Commit={{ $commit }}; ClosePolicy={{ $close }}.
   Never push automatically. Commit task paths/hunks only; preserve unrelated staging/conventions.
-  A dedicated independent verifier keeps its phase's narrower target, permissions, and stop
-  condition; **Start work is never its continuation**. A normal feature review phase continues
-  with Start work in this conversation to process the resulting label and, when configured,
-  coordinate acceptance closure.
+  Validation is the terminal phase label (`verified` for feature/task/chore, `fixed` for bug);
+  no independent verifier is spawned. A normal feature review phase continues with Start work in
+  this conversation to process the resulting label.
   {{ if not $commit }}Do not commit; report uncommitted files.{{ end }}
-  {{ if and (ne $close "Ask") (ne $close "Leave open") (ne $close "Verify and close") }}Invalid ClosePolicy: report and stop.{{ end }}
+  {{ if and (ne $close "Ask") (ne $close "Leave open") (ne $close "Close if validated") }}Invalid ClosePolicy: report and stop.{{ end }}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header" (dict
       "Target"   $target
@@ -49,23 +48,36 @@ prompt: |
 
   {{ if $target -}}
   ## Live state and blockers
-  Reload every run:
+  Reconcile notes diagnosis/recovery before readiness (contract below).
   ```bash
   bd show {{ $target }} --long --json
   bd dep tree {{ $target }}
   bd show {{ $target }} --children --json
-  bd comments {{ $target }}
+  bd comments {{ $target }} --json | jq '.[-10:]'
   ```
-  Blocked/deferred, future `defer_until`, `needs-human`, unresolved blockers, or no workable epic
-  child: stop before linking/claiming/dispatching. Use
-  {{ template "beads-issues/shared/unblock-guidance" (dict "SessionID" .Session.ID) }}
-  and wait for actual resolution; never clear blockers yourself.
+  Fetch reports by prefix. Recheck blockers. Evidence/authority required for stale-state fixes
+  or scoped prerequisites; else ask. Preserve dependencies/holds/scope/claims.
+  Blocked: stop before linking/claiming/dispatching implementation; diagnosis/recovery below excepted. Use
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+  {{ template "beads-issues/shared/blocked-diagnosis" . }}
+  Resolved: reload/resume.
+  Confirmed waits: owner/event; skip per candidate, not epic. Active uncertain handoff:
+  read-only diagnosis, no takeover. Reconcile pending first;
+  Unchanged: no new offer except authorized infrastructure retry.
+  Uncertain blockers/no workable children: offer
+  `mitto_ui_options`, "Check blockers" / "Not now". Only explicit Check blockers approves;
+  timeout/cancellation/decline/free text grants nothing. Ask one direct, specific question
+  if the user can unblock it; else report owner/event/retry.
+  {{ template "beads-issues/shared/resolve-blocked-dispatch" (dict "SessionID" .Session.ID "Corrections" "false") }}
+  Anchor: original target, no relink. ready/prerequisite: end turn; next Start work reloads
+  recovery/readiness/selection/approval. blocked/unknown: save recovery, report owner/event/retry, stop.
+  Keep Commit/ClosePolicy.
 
   ## Choose work and link
-  Parents: inspect children/dependencies; exclude closed/done, in-progress, transitively blocked.
-  If none are workable, use the blocked handoff above. Rank; ask `mitto_ui_options` with free
-  text, recommending the top child; for independent children, offer together and each individually.
-  Wait; work selected children only, leaving parent open. Work non-epic leaves directly.
+  Parents: exclude closed/done, in-progress, transitively blocked children. None workable:
+  blocked handoff above. Rank; ask `mitto_ui_options`, free text, recommend top child;
+  independent children: offer together/individually. Wait; selected only, parent stays open.
+  Work non-epic leaves directly.
   {{- else }}
   ## Current problem
   Derive goal, scope, constraints, and acceptance from conversation history. Do not run any `bd`
@@ -113,13 +125,7 @@ prompt: |
   one conversation each, named Start work with arguments
   `{ "IssueID": "<child-id>", "Commit": "{{ $commit }}", "ClosePolicy": "{{ $close }}" }`.
   If looped, mirror these arguments into `loop_arguments`. Wait ≤600s; never queue on parent.
-  {{ if eq $close "Verify and close" -}}
-  Children hand acceptance coordination back to this parent; process each queued handoff in its
-  own turn for the explicit child ticket. A handoff is NOT a PASS. Do not close/reap the worker
-  from terminal labels or a wait wrapper; retain it until independent verification is recorded.
-  {{- else }}
   {{ template "_shared/cleanup-child-conversations" . }}
-  {{- end }}
   Log `Start work: dispatched <phase prompt name>; next phase after it adds its label.` on the effective
   bead; end the turn.
 
@@ -129,7 +135,7 @@ prompt: |
   After checks pass, commit attributable leftovers (reproduction/tests included), scoped above.
   No empty commits; uncertainty/failure: report and stop.
   {{- else -}}
-  Report uncommitted files; {{ if eq $close "Verify and close" }}the independent gate still applies{{ else }}explicit approval may still close{{ end }}.
+  Report uncommitted files; closure follows ClosePolicy.
   {{- end }}
   Never close the parent from a child workflow. Reload ticket/children: closed skips closure;
   open children or unverified hierarchy: leave open, report why.
@@ -139,8 +145,11 @@ prompt: |
   Only an explicit **Yes, close it** permits `bd close <effective-id> --reason "<delivered work>"`.
   Timeout (`timed_out: true`), cancellation, decline, free text, or tool errors leave it open.
   Never default-continue closure; report close errors.
-  {{- else if eq $close "Verify and close" }}
-  {{ template "beads-issues/shared/acceptance-close" . }}
+  {{- else if eq $close "Close if validated" -}}
+  Reload the effective ticket. If it carries `verified` (feature/task/chore) or `fixed` (bug),
+  run `bd close <effective-id> --reason "Validated (<label>): <delivered work>"`, reload status,
+  and require a confirmed closed result; report any close error. If it carries neither label,
+  leave it open and report that validation is not complete. No further checks.
   {{- else -}}
   Do not ask about closure or run `bd close`; report completion.
   {{- end }}
@@ -150,12 +159,6 @@ prompt: |
   No ticket to close.
   {{- end }}
 
-  Delete only after completion, never nonterminal dispatch.{{ if and $target (eq $close "Verify and close") }}
-  Skip deletion while verification is pending or unsuccessful; do not delete a live verifier.{{ end }}
+  Delete only after completion, never nonterminal dispatch.
 
-  {{ if and $target (eq $close "Verify and close") -}}
-  Offer conversation cleanup only after this ticket's acceptance PASS and closure, with no pending
-  handoffs or live children. Otherwise keep it and report the incomplete outcome.
-  {{- else }}
   {{ template "_shared/offer-delete-conversation" . }}
-  {{- end }}

@@ -1,0 +1,19 @@
+{{- /*
+  beads-issues/shared/execution-state-read — read the canonical execution-state
+  block from a ticket's `notes`.
+
+  The argument (`.`) is the target bead ID as a plain string.
+
+  Writers: phase workers, loop drivers, Loop until issue complete. Start work
+  reads the block and delegates the write to the phase worker it dispatches.
+  Readers: every prompt that loads ticket context. Other prompts also write
+  unrelated notes content; treat the block as one section, not the whole field.
+*/ -}}
+- **Read execution state first.** Read recent comments only:
+  ```bash
+  bd show {{ . }} --long --json | jq -r '.[0].notes // ""' | sed -n '/<!-- mitto:execution-state:v1 -->/,/<!-- \/mitto:execution-state -->/p'
+  ```
+  If absent, use latest comments and write the block before ending. Fetch referenced
+  reports by prefix; do not read full history. Preserve notes outside the marker
+  byte-for-byte.
+{{- /* no trailing newline */ -}}

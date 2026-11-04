@@ -2,7 +2,7 @@
   beads-issues/shared/loop-driver-guidelines-common — the 4 "## Guidelines"
   bullets shared by all three loop-driver-shaped prompts (loop-fixing-bug,
   loop-implementing-feature, publish-post): Live state / Decide
-  autonomously / Silent unless it matters / Always log to the tracker.
+  autonomously / Silent unless it matters / Log a concise delta.
 
   Callers pass the caller-specific milestone list spliced into the "Silent
   unless it matters" bullet:
@@ -16,6 +16,8 @@
                     `mitto_ui_notify` call on scheduled runs. Spliced into
                     the parenthetical at the end of the "Silent unless it
                     matters" bullet.
+    Target        — effective bead ID; when supplied, the driver writes the
+                    canonical execution-state block in the ticket notes.
 
   The output is column-0 text (matches the existing beads-issues/shared/*
   fragments' convention). The caller's YAML `content: |` scalar's own
@@ -29,6 +31,7 @@
   something is genuinely unclear/unsolvable without the user — then use Step 4.
 - **Silent unless it matters.** On scheduled runs, `mitto_ui_notify` only for
   meaningful milestones ({{ .MilestoneList }}).
-- **Always log to the tracker** with `bd comment` so progress is auditable even when
+- **Log a concise delta/verdict** with `bd comment`; skip no-op runs even when
   you stay silent in the UI.
 {{ template "beads-issues/shared/comment-formatting" . }}
+{{ with .Target }}{{ template "beads-issues/shared/execution-state-write" . }}{{ end }}

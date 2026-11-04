@@ -1,0 +1,7 @@
+{{- /* Shared non-interactive diagnosis. Callers own scope, mutation and UI authority. */ -}}
+1. **Verify before declaring it blocked.** Reread status, dependencies, children, requirements/comments.
+   Trace producer/consumer handoffs and stale assumptions: what A needs, whether B delivers it.
+   Test knowledge gaps/unsupported impossibility claims with evidence.
+2. **Propose the smallest concrete next step.** Owner/evidence: sourced handoff,
+   research/test, or bounded retry with new evidence—not repeated encouragement.
+   Respect scope, mutation/coordination authority and confirmation.

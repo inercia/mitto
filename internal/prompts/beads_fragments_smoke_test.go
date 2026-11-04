@@ -182,7 +182,8 @@ func TestLoadBeadContextFragmentRenders(t *testing.T) {
 		"bd show mitto-abc --long --json",
 		"bd dep tree mitto-abc",
 		"bd show mitto-abc --children --json",
-		"bd comments mitto-abc",
+		"bd comments mitto-abc --json | jq '.[-10:]'",
+		"<!-- mitto:execution-state:v1 -->",
 	}
 	for _, name := range consumers {
 		body, ok := byName[name]
@@ -217,7 +218,8 @@ func TestLoadBeadContextFragmentRenders(t *testing.T) {
 		"bd show <bead-id> --long --json",
 		"bd dep tree <bead-id>",
 		"bd show <bead-id> --children --json",
-		"bd comments <bead-id>",
+		"bd comments <bead-id> --json | jq '.[-10:]'",
+		"<!-- mitto:execution-state:v1 -->",
 	} {
 		if !strings.Contains(litOut, hallmark) {
 			t.Errorf("prompt %q: rendered output missing hallmark %q — load-context did not inline", litName, hallmark)
@@ -632,7 +634,7 @@ func TestRankCandidatesFragmentRenders(t *testing.T) {
 		// uses compact equivalent prose rather than the old heading.
 		if !strings.Contains(out, "consumes the ranking:") {
 			compactOut := strings.Join(strings.Fields(out), " ")
-			if c.name != "Start work" || !strings.Contains(compactOut, "recommending the top child") || !strings.Contains(compactOut, "offer together and each individually") {
+			if c.name != "Start work" || !strings.Contains(compactOut, "recommend top child") || !strings.Contains(compactOut, "offer together/individually") {
 				t.Errorf("%q: missing instructions for consuming the ranked shortlist", c.name)
 			}
 		}
@@ -1035,8 +1037,8 @@ func TestLoopDriverGuidelinesFragmentsRender(t *testing.T) {
 		"**Live state only.** Always re-read labels via `bd show --json`",
 		"**Decide autonomously; never guess.**",
 		"**Silent unless it matters.** On scheduled runs, `mitto_ui_notify`",
-		"**Always log to the tracker** with `bd comment`",
-		"**Write the comment for a human, in rich Markdown.**",
+		"**Log a concise delta/verdict** with `bd comment`",
+		"**Write a concise, scientific progress comment.**",
 	}
 
 	// (name, milestoneList, chain, labelList, splitAntipattern, wantsParallel)

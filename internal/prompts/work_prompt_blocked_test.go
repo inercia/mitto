@@ -41,9 +41,14 @@ func TestBuiltinStartWorkExplainsBlockedBeadAndQueuesApprovedContinuation(t *tes
 		"## Live state and blockers",
 		"bd comments {{ $target }}",
 		"stop before linking/claiming/dispatching",
-		`template "beads-issues/shared/unblock-guidance"`,
-		"wait for actual resolution",
-		"If none are workable, use the blocked handoff above",
+		`template "beads-issues/shared/blocked-diagnosis"`,
+		`template "beads-issues/shared/resolve-blocked-dispatch"`,
+		"Recheck blockers. Evidence/authority required for stale-state fixes",
+		"or scoped prerequisites; else ask",
+		"Preserve dependencies/holds/scope/claims",
+		"Blocked: stop before linking/claiming/dispatching",
+		"Resolved: reload/resume",
+		"blocked handoff above",
 		"## Route exactly one phase from the live labels",
 		"Before dispatch, propose it with `mitto_ui_options`",
 		"60-second timeout",
@@ -54,6 +59,9 @@ func TestBuiltinStartWorkExplainsBlockedBeadAndQueuesApprovedContinuation(t *tes
 		if !strings.Contains(body, hallmark) {
 			t.Errorf("Start work prompt missing blocked-work hallmark %q", hallmark)
 		}
+	}
+	if strings.Contains(body, "never clear blockers") || strings.Contains(body, "wait for actual resolution") {
+		t.Error("Start work must not impose a blanket blocker-clearing prohibition or passive wait")
 	}
 
 	guard := strings.Index(body, "## Live state and blockers")
@@ -99,8 +107,8 @@ func TestBuiltinStartWorkOwnershipPolicies(t *testing.T) {
 		{"caller-owned", "false", "Leave open", "None", false},
 		{"phase-commits", "true", "Leave open", "Commit", false},
 		{"uncommitted-close", "false", "Ask", "None", true},
-		{"verified-commits", "true", "Verify and close", "Commit", false},
-		{"verified-uncommitted", "false", "Verify and close", "None", false},
+		{"verified-commits", "true", "Close if validated", "Commit", false},
+		{"verified-uncommitted", "false", "Close if validated", "None", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := linkedWorkRegressionContext()
@@ -186,7 +194,7 @@ func TestBuiltinStartWorkOwnershipParameterSchema(t *testing.T) {
 				}
 			case "ClosePolicy":
 				found++
-				if param.Type != "text" || param.Default != "Ask" || strings.Join(param.Options, ",") != "Ask,Leave open,Verify and close" {
+				if param.Type != "text" || param.Default != "Ask" || strings.Join(param.Options, ",") != "Ask,Leave open,Close if validated" {
 					t.Errorf("unexpected ClosePolicy schema: %+v", param)
 				}
 			}

@@ -145,8 +145,11 @@ prompt: |
   Labels drift between runs. Load the bead's **current** state fresh, every run:
 
   ```bash
-  bd show {{ $target }} --json --include-comments
+  bd show {{ $target }} --long --json
+  bd comments {{ $target }} --json | jq '.[-10:]'  # recent comments only
   ```
+
+  {{ template "beads-issues/shared/execution-state-read" $target }}
 
   Read its `labels` array. **Branch on this live JSON, not on any `Item.*` template
   field** — `Item.*` is empty at send time and only usable in `enabledWhen`.
@@ -363,4 +366,5 @@ prompt: |
   ) }}
   {{ template "beads-issues/shared/loop-driver-guidelines-common" (dict
       "MilestoneList" "phase dispatched, fixed, blocked/deferred, or final stop"
+      "Target"        $target
   ) }}

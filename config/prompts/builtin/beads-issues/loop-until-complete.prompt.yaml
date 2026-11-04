@@ -16,8 +16,8 @@ parameters:
     type: text
     required: false
     default: Ask
-    options: [Ask, Leave open, Verify and close]
-    description: Ask (default) before closing completed work, leave it open, or close only after fresh independent acceptance verification.
+    options: [Ask, Leave open, Close if validated]
+    description: Ask (default) before closing completed work, leave it open, or close immediately when the ticket already has its terminal validation label (`verified` for feature/task/chore, `fixed` for bug); no verifier.
 description: Auto-loop — keep advancing this bead toward completion, then self-terminate when nothing ready remains
 backgroundColor: "#C8E6C9"
 group: Tasks
@@ -58,15 +58,15 @@ prompt: |
   {{- end }}
   This is the **automated, non-interactive** sibling of "Start work": on every scheduled run you advance the target **one concrete increment** toward completion, and when there is **nothing ready left to do in scope**, you remove your own loop flag and stop.
 
-  **Role and submission boundary:** an assigned verifier/reviewer must retain its narrower
+  **Role and submission boundary:** an assigned reviewer must retain its narrower
   target, permissions and stop condition; this loop does not authorize taking over that task.
   Report the mismatch and stop. Otherwise this orchestrator and its workers must not push.
   Even `SubmitStrategy: "Pull Request"` means local commits only here, as documented above;
    actual PR submission requires a separate explicitly authorized submission workflow.
    {{ $close := Default "Ask" .Args.ClosePolicy -}}
    **ClosePolicy={{ $close }}.** Missing means `Ask`. If it is not exactly `Ask`, `Leave open`, or
-   `Verify and close`, report the invalid value with `mitto_ui_notify` and stop immediately: do not
-   claim, comment, defer, dispatch, verify, close, or otherwise mutate a bead.
+   `Close if validated`, report the invalid value with `mitto_ui_notify` and stop immediately: do not
+   claim, comment, defer, dispatch, close, or otherwise mutate a bead.
 
   {{- if .Iteration.IsUninterrupted }}
   ## Continuation — uninterrupted scheduled run
@@ -80,10 +80,10 @@ prompt: |
    forms and textboxes remain forbidden.
 
   Durable anchor for this loop: {{ if .Session.BeadsIssue }}bead `{{ .Session.BeadsIssue }}`{{ else }}this conversation's linked bead{{ end }}. Earlier runs already
-  advanced this work — review the prior `bd comment` "Iterate run:" entries on the
-  target bead and the existing children (`{{ .Children.MCPText }}`) so you continue
-  from where the last run stopped instead of repeating it. Then proceed straight to
-  the steps below.
+  advanced this work — read the execution-state block and the latest comments
+  (including `Iterate run:` entries) on the target bead, plus the existing children
+  (`{{ .Children.MCPText }}`), so you continue from where the last run stopped
+  instead of repeating it. Then proceed straight to the steps below.
   {{- if .Iteration.IsLast }}
 
   **Final scheduled run** (the `maxIterations` cap is reached after this run): do **not**
@@ -112,9 +112,10 @@ prompt: |
   {{- if not .Iteration.IsFirst }}
 
   **Continuation run.** Earlier runs of this conversation have already advanced this
-  work. Before doing anything else, review the prior `bd comment` "Iterate run:"
-  entries on the target bead and the existing children in `{{ .Children.MCPText }}`,
-  so you continue from where the last run stopped instead of repeating it.
+  work. Before doing anything else, read the execution-state block and the latest
+  comments (including `Iterate run:` entries) on the target bead, plus the existing
+  children in `{{ .Children.MCPText }}`, so you continue from where the last run
+  stopped instead of repeating it.
   {{- end }}
   {{- if .Iteration.IsLast }}
 
@@ -142,9 +143,21 @@ prompt: |
   bd show <target-bead> --long --json        # full fields, status, acceptance, design
   bd dep tree <target-bead>                   # blockers and what it blocks
   bd show <target-bead> --children --json     # child beads (is this an epic/parent?)
+  bd comments <target-bead> --json | jq '.[-10:]'  # recent comments only
   ```
 
+  {{ template "beads-issues/shared/execution-state-read" "<target-bead>" }}
+
+  The comment window is recent context only. Do not read the full history; fetch a
+  canonical `Plan:` or `Investigation` report by prefix
+  when the execution state or the recent window references it.
+
   {{ template "beads-issues/shared/scope-resolution" (dict "Target" "<target-bead>" "Mode" "one") }}
+
+  Before ordinary readiness selection, consume the anchor's `resolve_blocked.recovery` under
+  Step 5's handoff contract. Reconcile pending diagnosis first. An authorized read-only research
+  child or existing-owner handoff is this run's one phase; keep the anchor and end after recording
+  disposition/evidence. Skip confirmed waits per candidate, never an entire mixed epic.
 
   Any child that is **not clearly defined** or **not genuinely ready** must be **deferred**
   (Step 4), not guessed at; then move on to the next candidate.
@@ -199,7 +212,7 @@ prompt: |
    for an epic — its subtree of children). If nothing in scope is ready, go to
    **Step 5 (stop)**.
    An `in_progress` claim held by **this loop** is different: resume its recorded work,
-   including a pending verification, rather than treating it as someone else's work or
+   including an unfinished phase, rather than treating it as someone else's work or
    requiring it to appear in `bd ready`. Never steal or race another active worker's claim.
 
   ## Step 3 — One bounded work phase, then an evidence handoff
@@ -207,55 +220,21 @@ prompt: |
   For `<target>`:
 
   1. Understand what "complete" means — read its **acceptance criteria**, design
-     notes, and any prior `bd comment` history. Assess current status and what is
+     notes, the execution-state block, and the latest `bd comment` window. Assess current status and what is
      still missing. Separate sourced requirements and later user clarifications from
      agent proposals. Do not introduce release, publication or downstream-adoption gates
      merely because they would be useful; unresolved material scope is a question, not
      a confirmed external prerequisite.
-  2. **Select the next bounded phase before investigation or implementation.** Reconcile any
-      active verifier first. A verifier still running after a timeout remains this loop's runnable
-      work: wait for/reconcile its report on the next run; do not spawn another verifier or an
-      implementation child while it is active. Existing FAIL/UNKNOWN without new work or evidence
-      is not a retry trigger: **do not retry the same unchanged attempt**. A concrete FAIL selects a
-      later bounded repair: read the latest `Acceptance verification:` report and use its failed
-      criteria and evidence as the repair spec. UNKNOWN selects one bounded locally-collectable
-      evidence task. Only a real external requirement, missing authoritative requirement, or required
-      human sign-off is a blocker. Do not switch to `Ask` merely because verification failed.
-       Use the latest relevant outcome for this ticket: a FAIL/UNKNOWN or completed attempt
-       supersedes its older pending entry. Never treat an obsolete pending comment
-       as authorization to rerun unchanged verification. Record the next phase and the verifier's
-       conversation/attempt IDs durably so a continuation can resume the same live attempt.
+  2. **Select the next bounded phase before investigation or implementation.** Use the ticket's
+      current labels and phase evidence to choose the next bounded phase. Only a real external
+      requirement, missing authoritative requirement, or required human sign-off is a blocker.
       Before selecting new work, recognize a durable `Iterate run: completed` closure outcome for
       this exact unchanged `<target>`. It is not runnable implementation work: for an epic continue
       to another child, otherwise stop if nothing else is runnable. Do not relaunch workers or ask
       again on a scheduled run. Re-evaluate only after changed requirements/deliverable or a new
       explicit instruction; `Leave open` is neither a blocker nor a done status.
-      {{ if eq $close "Verify and close" }}
-      A durable `Iterate run: verification pending` entry for this exact `<target>`, or a completed
-      deliverable whose remaining work is acceptance evidence, selects verification now. Missing an
-      independent report or not-yet-run safe checks is **runnable verification work**, not a
-      deferral. Set `<effective-id> := <target>` before invoking the coordinator; it is the exact
-      selected child/leaf, never the durable epic/standalone anchor. Map `SubmitStrategy` to its
-      `Commit` argument (`None` → `false`; every other or omitted value → `true`):
-      {{- $verificationCommit := "true" }}
-      {{- if eq .Args.SubmitStrategy "None" }}{{ $verificationCommit = "false" }}{{ end }}
-      {{- $effectiveID := "<target>" }}
-      {{- $verificationContext := dict "Session" .Session "Args" (dict "Commit" $verificationCommit "RequireTerminalLabel" "false" "EffectiveID" $effectiveID) }}
-      {{ template "beads-issues/shared/acceptance-close" $verificationContext }}
-
-      After this one attempt, log its outcome and end this run. On FAIL, record a concise durable
-      `Iterate run: verification failed because <failed criteria and reasons>` comment; the
-      verifier's `Acceptance verification:` report remains the detailed evidence. Do not repair
-      inline and do not switch to `Ask`. The next run reads that report and dispatches one bounded
-      repair scoped to the failed criteria; only a later run verifies the repaired deliverable again.
-      The coordinator's verifier is a fresh sibling owned by this orchestrator, never a grandchild.
-      It is the only newly spawned child this run, and a PASS closes only `<target>`.
-      {{ else }}
-      For `Ask` and `Leave open`, give locally runnable missing checks/evidence to the bounded
-      worker; do not dispatch an independent verifier. If the ticket is already genuinely complete
-      at run start, proceed directly to item 8's policy-specific completion outcome instead of
-      dispatching another implementation child.
-      {{ end }}
+      If the ticket is already genuinely complete at run start, proceed directly to item 8's
+      policy-specific completion outcome instead of dispatching another implementation child.
   3. Claim it so others know it is being worked on, then record durable ownership:
 
      ```bash
@@ -309,11 +288,6 @@ prompt: |
 
        {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "consumer") }}
 
-       If the latest `Acceptance verification:` report is a FAIL, the repair increment is exactly
-       its failed criteria: include those criteria, the verifier's evidence, and the requirement to
-       re-run the relevant checks in the child prompt. The Investigation Report remains context,
-       not a substitute for the failed criteria.
-
        Otherwise, before dispatching, make sure the
        work is unambiguous and self-contained. If `<target>` is itself a small,
        well-defined bead, you may hand the child the **whole bead**; otherwise carve
@@ -358,11 +332,14 @@ prompt: |
       establishes **every** authoritative acceptance criterion. A worker's completion claim or
       phase label is not itself acceptance evidence, and no criterion may be waived. An explicit
       publication criterion remains unmet until its actual requirement is met; **do not waive it or push to satisfy it**.
-        {{ if eq $close "Verify and close" -}}
-       If this increment completes the deliverable, record `Iterate run: verification pending —
-       <completion/evidence summary>.` and **end this run**. Do not launch the verifier now: the
-       next run selects that pending phase before any implementation, preserving one new child per run.
-         {{- else if eq $close "Ask" -}}
+        {{ if eq $close "Close if validated" -}}
+        Reload `<target>`. If it carries the terminal validation label — `verified` for a
+        feature/task/chore, or `fixed` for a bug — run
+        `bd close <target> --reason "Validated (<label>): <delivered work>"`, reload status, and
+        require a confirmed closed result. Report any close failure. If no terminal label is
+        present, do not close: report that validation is not recorded and leave the ticket open.
+        Do not run extra checks.
+        {{- else if eq $close "Ask" -}}
          If acceptance is complete, first reload the ticket, children, blockers and current workspace
          state and capture that as the pre-approval snapshot. Never waive a criterion or close with a
          genuine blocker, deferral, human/external sign-off, open child, active other worker, or changed
@@ -424,6 +401,11 @@ prompt: |
 
   ## Step 5 — Stop condition: nothing ready left in scope
 
+  {{ template "beads-issues/shared/resolve-blocked-loop" . }}
+
+  On this stop path, state writes target the durable epic/standalone anchor, not an unset or
+  last-skipped `<target>`. Keep its `resolve_blocked` checkpoint when writing ordinary state.
+
    When there is **nothing ready** left within the target bead's scope (the issue
    itself is done/deferred/blocked **or a completed-but-open unchanged unit under its
    current ClosePolicy**, and — for an epic — no child is ready), the loop is finished.
@@ -432,8 +414,7 @@ prompt: |
    **Self-terminate**: remove your own loop flag so this
    becomes a regular (non-loop) conversation, and post a final summary.
    This condition does **not** include this loop's own claimed `in_progress` work:
-   a durable pending verification, a still-running verifier awaiting reconciliation,
-   locally collectable evidence work, or a concrete repair after FAIL is runnable even
+   a durable pending phase, locally collectable evidence work, or a concrete repair is runnable even
    when `bd ready` omits it. Check the `Iterate run: claimed by loop session {{ .Session.ID }}`
    comment and child status before stopping; do not mistake another active worker's claim for yours.
 
@@ -470,5 +451,7 @@ prompt: |
   - **Silent unless it matters.** On scheduled runs, send a `mitto_ui_notify` only
     for meaningful milestones (increment completed, issue closed, blocked/deferred,
     or final stop). Stay quiet for routine no-op runs.
-  - **Always log to the tracker** with `bd comment` so progress is auditable even
-    when you stay silent in the UI.
+  - **Log only a concise delta/verdict** with `bd comment`; skip the comment when
+    nothing changed.
+
+  {{ template "beads-issues/shared/execution-state-write" "<target>" }}

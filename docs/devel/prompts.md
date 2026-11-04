@@ -36,36 +36,15 @@ flowchart TB
     DISP --> AGENT[ACP agent]
 ```
 
-## Start work acceptance closure
+## Start work closure policy
 
-`Start work` keeps its existing phase labels and routes. Its opt-in `ClosePolicy: Verify and close`
-adds a final gate, not a new global label: `beads-issues/shared/acceptance-close.tmpl`
-coordinates a fresh `Acceptance verification phase` child. The phase has `menus: internal`,
-Reasoning model selection, no reuse/singleton target, and no loop. `Ask` remains the default;
-`Leave open` remains the caller-owned mode.
-
-The coordinator snapshots requirements/hierarchy and Git HEAD plus staged/unstaged/untracked
-content hashes, supplies the reproducible recipe, and binds the report to an attempt UUID.
-The verifier records a per-criterion PASS/FAIL/UNKNOWN JSON comment and sends the same report
-through `mitto_children_tasks_report`. The coordinator waits once (600s), checks the actual
-child report and durable comment, rechecks current state, and only then closes the exact ticket.
-Wait success, `completed`, idle state, stale reports and synthetic `stuck` results are not PASS.
-The report respects the existing 8000-byte summary / 16000-byte details bounds; an oversized
-checklist is persisted but returns UNKNOWN rather than truncating evidence.
-
-Caller handling is explicit: Start work's self-requeue and parallel-worker dispatch forward
-`Commit` and `ClosePolicy` (and mirror loop arguments when used). MCP disallows grandchildren;
-a child delegates the full coordinator procedure to its parent, rather than dispatching
-Start work there (which might resolve the parent's linked bead). The parent then creates a
-sibling verifier. Keep workers with pending handoffs, and never apply generic child cleanup
-before the acceptance result is durable. Generic prompt pickers already forward inner arguments;
-no special dispatcher, permission bypass, or new global phase state is needed. The independent
-bug/feature loop drivers are not fixed-name Start work callers and retain their closure rules;
-the loop supervisor's post-task hook runs too late to be an acceptance gate.
-
-This is a prompt contract, not runtime enforcement or an atomic compare-and-close operation.
-Unreliable snapshots, concurrent writers, missing permissions or ambiguous requirements must
-fail closed. No implementation repair loop or automatic push is part of this policy.
+`Start work` keeps its existing phase labels and routes. `ClosePolicy` supports `Ask` (default),
+`Leave open`, and `Close if validated`. `Close if validated` closes immediately when the
+effective ticket already carries its terminal validation label — `verified` for features,
+tasks, and chores, or `fixed` for bugs. It performs no independent verification, hashing,
+acceptance report, or extra checks; the prior review/fix phase is the validation. If the label
+is absent, the ticket stays open and the reason is reported. `Ask` still requires an explicit
+Yes; timeout never closes. `Leave open` never closes.
 
 ## 1. The `menus` field is the routing key
 

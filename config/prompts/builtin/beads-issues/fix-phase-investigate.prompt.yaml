@@ -55,8 +55,11 @@ prompt: |
   Labels drift between runs. Load the bead's **current** state fresh:
 
   ```bash
-  bd show {{ $target }} --json --include-comments
+  bd show {{ $target }} --long --json
+  bd comments {{ $target }} --json | jq '.[-10:]'  # recent comments only
   ```
+
+  {{ template "beads-issues/shared/execution-state-read" $target }}
 
   Read its `labels` array and any prior comments. If `researched` is already present,
   this phase's work is already done — `bd comment` a note that the phase re-ran
@@ -151,4 +154,5 @@ prompt: |
       "TagNoun"         "findings"
       "TagPrefix"       "Investigation"
       "Tier"            "Reasoning"
+      "Target"          $target
   ) }}

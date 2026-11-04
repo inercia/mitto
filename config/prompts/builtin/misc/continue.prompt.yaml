@@ -43,7 +43,8 @@ prompt: |
   - **Commit** completed increments as follows:
 
     {{ template "git/shared/safe-stage" . }}
-  - If you become genuinely blocked (ambiguous requirement, missing decision), do
+  - For linked-ticket uncertain blockers, apply B4's diagnostic gate before stopping.
+    If you become genuinely blocked (ambiguous requirement, missing decision), do
     **not** guess — notify what's blocked and stop iterating
     (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)`).
   {{- else }}
@@ -131,9 +132,10 @@ prompt: |
   {{- end }}
 
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
-  In scheduled mode, if blocked or unclear: notify and stop (see above) — do not ask.
+  In scheduled mode, if blocked or unclear: use B4 for an authorized linked task; otherwise
+  notify and stop (see above) — do not ask.
   {{- else }}
-  If blocked or unclear, ask for clarification before proceeding.
+  If blocked or unclear, use B4 for a linked task; otherwise ask for clarification.
   {{- end }}
 
   {{- if .Session.BeadsIssue }}
@@ -155,13 +157,19 @@ prompt: |
 
   ### B2. Decide what to work on this continuation
 
+  First consume the linked anchor's `resolve_blocked.recovery` under B4's contract, before normal
+  readiness selection. Reconcile pending diagnostics first. A research/handoff action is this run's
+  one increment; do not also implement. Preserve the anchor and record disposition/evidence.
+
   Pick the **first** case that applies and treat the chosen bead as the work for this run:
 
-  1. **The bead has remaining work** (acceptance criteria not yet met) → keep implementing it as
-     the natural next step above. Claim it if it isn't already (`bd update {{ .Session.BeadsIssue }} --claim`).
-  2. **The bead is an epic/parent with open children** → it's a container, not directly
+  1. **The bead is an epic/parent with open children** → it's a container, not directly
      implementable; work the **next ready child** (open + unblocked per `bd dep tree`), chosen
-     with the canonical ranking below.
+      with the canonical ranking below.
+     If no child is runnable, go to B4; never implement the container itself.
+  2. **A non-container leaf has remaining work** → use normal readiness/ownership checks;
+     claim only an unblocked, non-deferred, unowned or already-owned-by-this-session target.
+     Blocked/not-ready leaves go to B4, not implementation. An epic never falls through here.
   3. **The bead is complete but has follow-ups** → using `bd ready --json` to confirm readiness,
      look in order for: a ready **dependent** (an issue this bead *blocks* that is now unblocked),
      then a ready **sibling** under the same parent epic. Work that follow-up, again choosing
@@ -212,11 +220,37 @@ prompt: |
 
   ### B4. When nothing ready remains
 
-  The bead and all its in-scope follow-ups are done, blocked, or deferred:
+  Distinguish complete from unfinished-but-not-ready; blocked is not completion.
+  Apply the delegated role boundary first: a restricted child reports to its parent,
+  never becomes a coordinator. Only the currently authorized linked ticket/subtree may be
+  diagnosed; follow-up suggestions do not enlarge scope. No linked ticket: no diagnostic spawn.
+  Recheck live state first. If runnable work exists, use B2. If all work is complete or unchanged
+   completed-but-open, skip diagnosis. Skip confirmed human/external/owner waits per candidate,
+   not across the epic. Active ownership with an uncertain producer/consumer handoff still permits
+   read-only diagnosis, never takeover. Report confirmed waits' owner/event without diagnosis.
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
-  notify completion and **stop iterating** —
+  For uncertain blockers with unfinished in-scope work, run one read-only diagnostic handoff
+  before disabling this loop. Do not ask work/design UI questions. Pending diagnosis: reconcile
+  the same child, do not disable the loop except at its configured cap. An unchanged attempted
+  input (except the authorized infrastructure retry), blocked/unknown outcome or missing
+  permission/budget follows the stop path below.
+  {{- else }}
+  Reconcile pending diagnosis first; unchanged attempted input: report, do not offer again
+  except the shared explicit, evidenced, one-use infrastructure retry. Continue is not consent.
+  Offer "Check blockers" / "Not now" with `mitto_ui_options`. Only an explicit Check blockers
+  approves diagnosis; timeout/cancellation/decline/free text does not. Decline: stop, no spawn.
+  {{- end }}
+  {{ template "beads-issues/shared/resolve-blocked-dispatch" (dict "SessionID" .Session.ID "Corrections" "false") }}
+  Use the authorized linked ticket as diagnostic anchor without relinking. ready/prerequisite:
+  end this run, do not execute a second phase. Next continuation reloads readiness and B2;
+  prerequisites must be fully specified, in scope and live-routable. Recheck DONE WHEN, preserve
+  closure/commit authority. blocked/unknown: report evidence, owner/event/retry, never completion.
+  A disabled loop needs an external/manual trigger; it does not wake itself.
+  When diagnosis is skipped or conclusively unresolved:
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  notify the actual outcome (complete, blocked, or unknown) and **stop iterating** —
   `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)`.
   {{- else }}
-  say so and suggest closing/committing anything outstanding. Do not take git actions without approval.
+  report the actual outcome; suggest closing/committing only completed work. Do not take git actions without approval.
   {{- end }}
   {{- end }}

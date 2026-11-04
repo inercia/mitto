@@ -40,17 +40,20 @@
                       "Fix").
     Tier            — "Reasoning" or "Coding"; declared model tier
                       for the phase.
+    Target          — effective bead ID; when supplied, the phase writes the
+                      canonical execution-state block in the ticket notes.
 
   Uses only builtin text/template actions so it is safe to attach to
   every render context, including the narrow-FuncMap target.title path.
 */}}
 - **Live state only.** Always re-read labels via `bd show --json` at the start of
   the phase; never assume labels from a prior run{{ if .IncludeItemNote }} or from `Item.*`{{ end }}.
-- **Always log to the tracker** with `bd comment` so progress is auditable.
+- **Log a concise delta/verdict** with `bd comment`; skip the comment when nothing changed.
 - **Phase workers never push.** A local commit or `SubmitStrategy=Pull Request`
    does not authorize a push; the strategy selects the task branch only. Leave
    pushing to the driver's separate submission step, and do not infer permission
    to publish dependencies, deploy, or adopt downstream work.
 {{ template "beads-issues/shared/comment-formatting" . }}
+{{ with .Target }}{{ template "beads-issues/shared/execution-state-write" . }}{{ end }}
 - **Tier tag every comment.** Prefix the {{ .TagNoun }} with `{{ .TagPrefix }} [tier: {{ .Tier }}]:` so
   the tier split is observable in the bead history (mitto-mpu5 acceptance criteria).
