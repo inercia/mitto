@@ -1,0 +1,48 @@
+icon: sync
+name: Reorganize commits
+menus: prompts, !promptsLoop
+description: Squash and reorder the branch's commits into a clearer history
+group: Submission of changes
+backgroundColor: "#B2DFDB"
+enabledWhen: '!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Coding
+  - modelTag: Smart
+target:
+  title: "Submission of changes"
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Reorganize all commits on the current branch into a clearer, more coherent
+  history without changing the final content of the branch.
+
+  This rewrites history. It requires explicit user approval of the proposed
+  commit list. If the approval question times out, is declined, or is cancelled,
+  do NOT rewrite anything: leave the branch exactly as it is and stop.
+
+  {{ template "git/shared/reorganize-commits" . }}
+
+  ### 8. Report and Push
+
+  Report the old and new commit counts, the new list, and the backup branch name
+  with the rollback command (`git reset --hard <backup>`).
+
+  Do NOT push by default. If the branch was already pushed, tell the user a force
+  push is needed and ask with `mitto_ui_options`. Push only on explicit
+  approval, using:
+
+  ```bash
+  git push --force-with-lease origin <current-branch>
+  ```
+
+  Never use plain `git push --force`. Remind the user that collaborators may
+  need to reset their local branches after a force push.
+
+  ## Guidelines
+
+  - Preserve the exact final content of the branch, and original authorship where practical
+  - Never lose work: backup first, verify the tree afterwards
+  - Protect unrelated uncommitted and untracked files
+  - Ask rather than guess when a grouping is unclear
+  - Offer to abort and restore the backup if the rewrite becomes complicated

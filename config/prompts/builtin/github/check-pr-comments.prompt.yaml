@@ -17,6 +17,10 @@ parameters:
     type: text
     required: false
     description: 'Optional PR to check — a number, URL, or branch name. If omitted, uses the current branch.'
+  - name: ReorganizeCommits
+    type: boolean
+    default: "false"
+    description: 'After addressing feedback and before pushing, reorganize (squash) the commits created in this run into a coherent history. Pushes with --force-with-lease if the branch was already pushed.'
 enabledWhen: 'FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab")) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
   - modelTag: Smart
@@ -110,7 +114,7 @@ prompt: |
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
     prompt_name: "Address PR Comments",
-    arguments: { "Pr": "{{ .Args.Pr }}" })
+    arguments: { "Pr": "{{ .Args.Pr }}", "ReorganizeCommits": "{{ .Args.ReorganizeCommits }}" })
   ```
 
   The queued prompt runs as the **next** turn of this conversation, after this

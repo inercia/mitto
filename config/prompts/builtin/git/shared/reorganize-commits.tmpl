@@ -1,0 +1,119 @@
+{{- /* Shared commit-reorganization steps (check, base, analyze, propose, backup, rewrite, verify). Callers: git/reorganize-commits, github/address-pr-comments. */ -}}
+  ### 1. Check Repository Status
+
+  ```bash
+  git branch --show-current
+  git status --porcelain --untracked-files=no
+  git status --short
+  ```
+
+  - Stop if on the base branch or in detached HEAD state: only feature branches are reorganized.
+  - Only tracked changes block the rewrite. Leave untracked files untouched.
+  - If tracked uncommitted changes exist, ask the user whether to commit or stash them. Do not proceed until the tracked working tree is clean.
+  - Stop if a rebase, merge or cherry-pick is already in progress.
+
+  ### 2. Identify the Base
+
+  {{ template "git/shared/identify-remote-branch" . }}
+
+  ```bash
+  git fetch <target-remote>
+  git merge-base HEAD <target-remote>/<target-branch>
+  ```
+
+  Call the merge base `<base>`. Only commits in `<base>..HEAD` are reorganized.
+  If the branch contains merge commits, or the history is already published and
+  shared, warn the user and ask before continuing. If there are fewer than two
+  commits, report that there is nothing to reorganize and stop.
+
+  ### 3. Analyze the Commits
+
+  ```bash
+  git log --reverse --stat --format='%h %an %s' <base>..HEAD
+  git diff --stat <base>..HEAD
+  ```
+
+  Read the diffs where subjects are unclear. Group commits by purpose:
+
+  - Squash fixups, typo fixes, "WIP" and review follow-ups into the commit they fix.
+  - Merge commits that touch the same change in tiny steps.
+  - Keep unrelated concerns (feature, refactor, tests, docs, formatting) in separate commits.
+  - Order commits so each one builds on the previous one: foundations and refactors first, then behavior, then tests and docs.
+  - Every resulting commit should be coherent and, where practical, leave the tree buildable.
+
+  ### 4. Propose the New History
+
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Scheduled mode — no approval is possible.** Reorganize ONLY the commits
+  created in this run (fixups, "address feedback" follow-ups): those after the
+  `HEAD` hash recorded at the start of the run, call it `<run-start>`. Use
+  `<run-start>` in place of `<base>` for every `<base>..HEAD` and
+  `git reset --soft <base>` below. Squash each into the earlier commit it
+  fixes only when that earlier commit is also created in this run; otherwise
+  fold the run's commits into one coherent follow-up commit. Never rewrite
+  commits that existed before the run. Skip the proposal question (step 4):
+  print the plan in the report instead. If fewer than two run-created commits
+  exist, do nothing.
+  {{- end }}
+
+  Print the proposal as a numbered list, oldest first. For each new commit give:
+
+  - the proposed message (conventional style, matching the repository's recent history)
+  - the original commits (short hashes) folded into it
+  - the main files it touches
+
+  Also state how many commits there are before and after. Then ask with
+  `mitto_ui_options`, with these options:
+
+  - "Approve and rewrite"
+  - "Revise the plan"
+  - "Cancel"
+
+  Allow free text for requested changes. Apply the plan only on an explicit
+  "Approve and rewrite". For "Revise the plan", update the proposal and ask again.
+  Timeout, decline, cancel or any other answer means stop without changing anything.
+  Never treat silence as approval.
+
+  ### 5. Create a Backup
+
+  ```bash
+  git branch backup/<current-branch>-before-reorganize-$(date +%Y%m%d-%H%M%S)
+  ```
+
+  Record the backup name and the current `HEAD` hash. Never skip this step.
+
+  ### 6. Rewrite Non-Interactively
+
+  Rebuild the history with a soft reset and explicit paths. Do not use
+  `git rebase -i` (it needs an interactive editor), `git add -A`, `git add .`,
+  or `git commit -a`.
+
+  ```bash
+  git reset --soft <base>
+  git reset
+  ```
+
+  For each planned commit, in order: stage only its files by explicit path
+  (`git add -- <paths>`; use `git apply --cached <patch>` when a file must be
+  split across commits), review `git diff --cached --stat`, then commit.
+
+  Reuse the original commit messages' conventions (including any `(refs <id>)`
+  footer). Creating these local commits does not authorize pushing.
+
+  If a step fails or the plan cannot be applied cleanly, restore the original
+  branch with `git reset --hard <backup>` after telling the user, and stop.
+  Only this branch is reset, never unrelated work.
+
+  ### 7. Verify
+
+  ```bash
+  git diff <backup> HEAD
+  git status --short
+  git log --oneline <base>..HEAD
+  ```
+
+  `git diff <backup> HEAD` MUST be empty: the final tree must be identical to the
+  original branch tip. If it is not, restore with `git reset --hard <backup>`,
+  report the difference, and stop. Run the project's quick checks (build or
+  tests) if the commits changed order in a way that could matter.

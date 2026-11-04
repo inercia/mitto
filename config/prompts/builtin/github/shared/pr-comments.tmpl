@@ -74,6 +74,16 @@ mitto_conversation_new(self_id: "{{ .Session.ID }}",
     Local gate before pushing: run the project's format → lint → unit → integration
     steps (whatever the repo's Makefile or docs specify) and only push once
     they all pass. Force-push with --force-with-lease.
+{{- if eq .Args.ReorganizeCommits "true" }}
+
+    Before pushing, reorganize ONLY the commits you created in this run (fixups,
+    'address feedback' follow-ups) into a coherent history: record the starting
+    HEAD, take a backup branch, squash non-interactively (no approval needed when
+    unattended), verify 'git diff <backup> HEAD' is empty, and never touch
+    earlier commits. Skip if you created fewer than 2 commits. If the branch was
+    already pushed, push with --force-with-lease (never plain --force) and use
+    the new hashes in thread replies.
+{{- end }}
 
     When done, resolve only fixed review threads; leave blocked/disputed ones
     unresolved. Report back per item: published, pending-push, replied-only, awaiting-author, or

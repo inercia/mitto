@@ -6,6 +6,10 @@ parameters:
     type: text
     required: false
     description: 'Optional GitHub repository (owner/repo) to babysit. If omitted, the repository of the current folder is used.'
+  - name: ReorganizeCommits
+    type: boolean
+    default: "false"
+    description: 'After addressing feedback and before pushing, reorganize (squash) the commits created in this run into a coherent history. Pushes with --force-with-lease if the branch was already pushed.'
 description: 'Regularly check your own open PRs: rebase stale branches, report CI failures, flag ready-to-merge PRs, and address review comments'
 group: GitHub
 backgroundColor: '#BBDEFB'

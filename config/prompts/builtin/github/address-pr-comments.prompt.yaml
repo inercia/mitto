@@ -17,6 +17,10 @@ parameters:
     type: text
     required: false
     description: 'Optional PR to address — a number, URL, or branch name. If omitted, uses the current branch.'
+  - name: ReorganizeCommits
+    type: boolean
+    default: "false"
+    description: 'Reorganize the branch commits (squash fixups, order logically) before pushing the fixes. Rewrites history; an already-pushed branch is then pushed with --force-with-lease.'
 enabledWhen: 'FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab")) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 prompt: |
   Address all review comments on the current pull request with thoughtful responses and code changes.
@@ -198,6 +202,25 @@ prompt: |
 
   {{ template "git/shared/check-behind-base" . }}
 
+  {{- if eq .Args.ReorganizeCommits "true" }}
+
+  ### 10. Reorganize Commits Before Pushing
+
+  Run this only if the branch has at least 2 commits of its own. Record
+  whether the branch was already pushed (`git ls-remote --heads <push-remote> <branch-name>`).
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  In scheduled mode only the commits created in this run are rewritten.
+  {{- else }}
+  If the approval question times out, is declined, or is cancelled, skip
+  this step and push as-is with a plain push.
+  {{- end }}
+
+  {{ template "git/shared/reorganize-commits" . }}
+
+  Remember whether history was actually rewritten: it decides the push command
+  in step 11 and the commit hashes used in fix-completion replies.
+  {{- end }}
+
   ### 11. Push and Request Re-review
 
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
@@ -213,12 +236,14 @@ prompt: |
 
   ```bash
   git push <push-remote> <branch-name>
+  # Only if step 10 rewrote history of an already-pushed branch:
+  # git push --force-with-lease <push-remote> <branch-name>   (never plain --force)
   gh pr ready && gh pr comment --body "Ready for re-review"   # GitHub
   glab mr update --ready                                       # GitLab
   ```
 
   After successful push and remote-head verification, post fix-completion
-  replies referencing the published commits and only then resolve fixed threads
+  replies referencing the published commits (the new hashes if history was reorganized) and only then resolve fixed threads
   under the existing authorship/permission rule. If a gate stops the push, it is
   declined, or it fails, leave those threads unresolved and fixes pending-push.
 

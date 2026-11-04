@@ -5652,8 +5652,9 @@ func TestBuiltinPrompts_TodayTierRoutingAdoption(t *testing.T) {
 		{file: "jira/work.prompt.yaml", bucket: workspaceTitle, wantTitle: "JIRA: start work"},
 		{file: "ci/check-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Check CI"},
 		{file: "ci/fix-ci.prompt.yaml", bucket: workspaceTitle, wantTitle: "Fix CI"},
-		// The four git prompts share one routing title so they serialise on the
+		// The git prompts share one routing title so they serialise on the
 		// single working tree they all mutate.
+		{file: "git/reorganize-commits.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submission of changes"},
 		{file: "git/create-commits.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submission of changes"},
 		{file: "git/rebase-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submission of changes"},
 		{file: "git/submit-changes.prompt.yaml", bucket: workspaceTitle, wantTitle: "Submission of changes"},

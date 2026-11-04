@@ -23,6 +23,7 @@ func TestWorkflowPromptsHiddenForLinkedSupportIssues(t *testing.T) {
 		"git/commit-and-submit.prompt.yaml":      {"Submission of changes", `!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`},
 		"git/create-commits.prompt.yaml":         {"Submission of changes", `!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`},
 		"git/rebase-changes.prompt.yaml":         {"Submission of changes", `!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`},
+		"git/reorganize-commits.prompt.yaml":     {"Submission of changes", `!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`},
 		"git/submit-changes.prompt.yaml":         {"Submission of changes", `!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`},
 		"github/address-pr-comments.prompt.yaml": {"Submission of changes", `FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab")) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`},
 		"github/check-pr-comments.prompt.yaml":   {"Submission of changes", `FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab")) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`},

@@ -6,6 +6,10 @@ parameters:
     type: text
     required: false
     description: 'Optional PR reference (a number like `123`, or a full URL like `https://github.com/owner/repo/pull/123`). If omitted, the PR created earlier in THIS conversation is auto-detected from the conversation history; if none is found, the loop aborts.'
+  - name: ReorganizeCommits
+    type: boolean
+    default: "false"
+    description: 'After addressing feedback and before pushing, reorganize (squash) the commits created in this run into a coherent history. Pushes with --force-with-lease if the branch was already pushed.'
 description: Auto-loop — keep babysitting the PR that was created in this conversation (rebase, fix CI, address comments, merge when ready), then self-terminate when it is merged or closed
 group: GitHub
 backgroundColor: '#BBDEFB'
